@@ -622,3 +622,26 @@ db.auth.onAuthStateChange(async () => {
 
 setPage('dashboard');
 loadSessionAndData();
+
+document.addEventListener('DOMContentLoaded', initApp);
+
+function initApp() {
+  console.log('initApp started');
+
+  if (!el.signInBtn) console.error('signInBtn not found');
+  if (!el.signUpBtn) console.error('signUpBtn not found');
+  if (!el.email) console.error('email input not found');
+  if (!el.password) console.error('password input not found');
+
+  if (el.signInBtn) {
+    el.signInBtn.addEventListener('click', signIn);
+  }
+
+  if (el.signUpBtn) {
+    el.signUpBtn.addEventListener('click', signUp);
+  }
+
+  if (el.logoutBtn) {
+    el.logoutBtn.addEventListener('click', logout);
+  }
+}
