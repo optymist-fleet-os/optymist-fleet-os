@@ -2,7 +2,13 @@ const SUPABASE_URL = 'https://tegravrxaqcuktwjanzm.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_FWerGr6XL94LiVQs2Lel-A_2M3sTKIu';
 
 const { createClient } = supabase;
-const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+const db = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  }
+});
 
 const state = {
   session: null,
@@ -20,26 +26,7 @@ const state = {
   }
 };
 
-const el = {
-  authView: document.getElementById('authView'),
-  appView: document.getElementById('appView'),
-  msg: document.getElementById('msg'),
-  appMsg: document.getElementById('appMsg'),
-  email: document.getElementById('email'),
-  password: document.getElementById('password'),
-  signInBtn: document.getElementById('signInBtn'),
-  signUpBtn: document.getElementById('signUpBtn'),
-  logoutBtn: document.getElementById('logoutBtn'),
-  refreshBtn: document.getElementById('refreshBtn'),
-  userEmail: document.getElementById('userEmail'),
-  pageTitle: document.getElementById('pageTitle'),
-  pageSubtitle: document.getElementById('pageSubtitle'),
-  dashboardPage: document.getElementById('page-dashboard'),
-  driversPage: document.getElementById('page-drivers'),
-  vehiclesPage: document.getElementById('page-vehicles'),
-  settlementsPage: document.getElementById('page-settlements'),
-  menuButtons: () => Array.from(document.querySelectorAll('.menu-btn'))
-};
+const el = {};
 
 function safe(v) {
   return v == null ? '' : String(v).trim();
@@ -57,11 +44,22 @@ function money(v) {
   }) + ' zł';
 }
 
+function escapeHtml(text) {
+  return safe(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function showMsg(target, text, type = 'error') {
-  target.innerHTML = `<div class="msg ${type}">${text}</div>`;
+  if (!target) return;
+  target.innerHTML = `<div class="msg ${type}">${escapeHtml(text)}</div>`;
 }
 
 function clearMsg(target) {
+  if (!target) return;
   target.innerHTML = '';
 }
 
@@ -105,11 +103,43 @@ function ownerLabel(owner) {
 
 function mapById(list) {
   const m = {};
-  list.forEach(item => { m[String(item.id)] = item; });
+  (list || []).forEach(item => {
+    m[String(item.id)] = item;
+  });
   return m;
 }
 
+function qs(id) {
+  return document.getElementById(id);
+}
+
+function collectElements() {
+  el.authView = qs('authView');
+  el.appView = qs('appView');
+  el.msg = qs('msg');
+  el.appMsg = qs('appMsg');
+  el.email = qs('email');
+  el.password = qs('password');
+  el.signInBtn = qs('signInBtn');
+  el.signUpBtn = qs('signUpBtn');
+  el.logoutBtn = qs('logoutBtn');
+  el.refreshBtn = qs('refreshBtn');
+  el.userEmail = qs('userEmail');
+  el.pageTitle = qs('pageTitle');
+  el.pageSubtitle = qs('pageSubtitle');
+  el.dashboardPage = qs('page-dashboard');
+  el.driversPage = qs('page-drivers');
+  el.vehiclesPage = qs('page-vehicles');
+  el.settlementsPage = qs('page-settlements');
+}
+
+function menuButtons() {
+  return Array.from(document.querySelectorAll('.menu-btn'));
+}
+
 function renderAppShell(loggedIn) {
+  if (!el.authView || !el.appView) return;
+
   if (loggedIn) {
     el.authView.classList.add('hidden');
     el.appView.classList.remove('hidden');
@@ -130,76 +160,115 @@ function setPage(page) {
   };
 
   Object.entries(pages).forEach(([key, node]) => {
+    if (!node) return;
     if (key === page) node.classList.remove('hidden');
     else node.classList.add('hidden');
   });
 
-  el.menuButtons().forEach(btn => {
+  menuButtons().forEach(btn => {
     btn.classList.toggle('active', btn.dataset.page === page);
   });
 
-  if (page === 'dashboard') {
-    el.pageTitle.textContent = 'Dashboard';
-    el.pageSubtitle.textContent = 'Back office + settlements';
+  if (el.pageTitle && el.pageSubtitle) {
+    if (page === 'dashboard') {
+      el.pageTitle.textContent = 'Dashboard';
+      el.pageSubtitle.textContent = 'Back office + settlements';
+    }
+    if (page === 'drivers') {
+      el.pageTitle.textContent = 'Водії';
+      el.pageSubtitle.textContent = 'Список водіїв та їх дані';
+    }
+    if (page === 'vehicles') {
+      el.pageTitle.textContent = 'Авто';
+      el.pageSubtitle.textContent = 'Список авто та статуси';
+    }
+    if (page === 'settlements') {
+      el.pageTitle.textContent = 'Розрахунки';
+      el.pageSubtitle.textContent = 'Тижневі розрахунки водіїв';
+    }
   }
-  if (page === 'drivers') {
-    el.pageTitle.textContent = 'Водії';
-    el.pageSubtitle.textContent = 'Список водіїв та їх дані';
-  }
-  if (page === 'vehicles') {
-    el.pageTitle.textContent = 'Авто';
-    el.pageSubtitle.textContent = 'Список авто та статуси';
-  }
-  if (page === 'settlements') {
-    el.pageTitle.textContent = 'Розрахунки';
-    el.pageSubtitle.textContent = 'Тижневі розрахунки водіїв';
-  }
+}
+
+function setAuthButtonsDisabled(disabled) {
+  if (el.signInBtn) el.signInBtn.disabled = disabled;
+  if (el.signUpBtn) el.signUpBtn.disabled = disabled;
 }
 
 async function signUp() {
   clearMsg(el.msg);
-  const email = safe(el.email.value);
-  const password = safe(el.password.value);
+
+  const email = safe(el.email?.value);
+  const password = safe(el.password?.value);
 
   if (!email || !password) {
     showMsg(el.msg, 'Введи email і пароль');
     return;
   }
 
-  const { error } = await db.auth.signUp({ email, password });
+  setAuthButtonsDisabled(true);
 
-  if (error) {
-    showMsg(el.msg, error.message);
-    return;
+  try {
+    const { data, error } = await db.auth.signUp({ email, password });
+
+    if (error) {
+      showMsg(el.msg, error.message);
+      return;
+    }
+
+    if (data?.session) {
+      showMsg(el.msg, 'Реєстрація пройшла успішно', 'success');
+      await loadSessionAndData();
+    } else {
+      showMsg(
+        el.msg,
+        'Акаунт створено. Якщо увімкнене підтвердження email — підтвердь пошту, потім увійди.',
+        'success'
+      );
+    }
+  } catch (e) {
+    showMsg(el.msg, e.message || 'Помилка реєстрації');
+  } finally {
+    setAuthButtonsDisabled(false);
   }
-
-  showMsg(el.msg, 'Реєстрація пройшла успішно', 'success');
-  await loadSessionAndData();
 }
 
 async function signIn() {
   clearMsg(el.msg);
-  const email = safe(el.email.value);
-  const password = safe(el.password.value);
+
+  const email = safe(el.email?.value);
+  const password = safe(el.password?.value);
 
   if (!email || !password) {
     showMsg(el.msg, 'Введи email і пароль');
     return;
   }
 
-  const { error } = await db.auth.signInWithPassword({ email, password });
+  setAuthButtonsDisabled(true);
 
-  if (error) {
-    showMsg(el.msg, error.message);
-    return;
+  try {
+    const { error } = await db.auth.signInWithPassword({ email, password });
+
+    if (error) {
+      showMsg(el.msg, error.message);
+      return;
+    }
+
+    showMsg(el.msg, 'Успішний вхід', 'success');
+    await loadSessionAndData();
+  } catch (e) {
+    showMsg(el.msg, e.message || 'Помилка входу');
+  } finally {
+    setAuthButtonsDisabled(false);
   }
-
-  showMsg(el.msg, 'Успішний вхід', 'success');
-  await loadSessionAndData();
 }
 
 async function signOut() {
-  await db.auth.signOut();
+  try {
+    await db.auth.signOut();
+  } catch (e) {
+    console.error('signOut error:', e);
+  }
+
   state.session = null;
   renderAppShell(false);
   clearMsg(el.appMsg);
@@ -208,58 +277,70 @@ async function signOut() {
 async function loadSessionAndData() {
   clearMsg(el.appMsg);
 
-  const { data, error } = await db.auth.getSession();
-  if (error) {
-    showMsg(el.msg, error.message);
-    return;
+  try {
+    const { data, error } = await db.auth.getSession();
+
+    if (error) {
+      showMsg(el.msg, error.message);
+      return;
+    }
+
+    const session = data?.session || null;
+    state.session = session;
+
+    if (!session) {
+      renderAppShell(false);
+      return;
+    }
+
+    renderAppShell(true);
+
+    if (el.userEmail) {
+      el.userEmail.textContent = session.user?.email || '';
+    }
+
+    await loadAllData();
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Помилка завантаження сесії');
   }
-
-  const session = data?.session || null;
-  state.session = session;
-
-  if (!session) {
-    renderAppShell(false);
-    return;
-  }
-
-  renderAppShell(true);
-  el.userEmail.textContent = session.user.email || '';
-
-  await loadAllData();
 }
 
 async function loadAllData() {
   clearMsg(el.appMsg);
 
-  const [
-    driversRes,
-    vehiclesRes,
-    settlementsRes,
-    ownersRes
-  ] = await Promise.all([
-    db.from('drivers').select('*').order('id', { ascending: true }),
-    db.from('vehicles').select('*').order('id', { ascending: true }),
-    db.from('driver_settlements').select('*').order('id', { ascending: false }),
-    db.from('owners').select('*').order('id', { ascending: true })
-  ]);
+  try {
+    const [
+      driversRes,
+      vehiclesRes,
+      settlementsRes,
+      ownersRes
+    ] = await Promise.all([
+      db.from('drivers').select('*').order('id', { ascending: true }),
+      db.from('vehicles').select('*').order('id', { ascending: true }),
+      db.from('driver_settlements').select('*').order('id', { ascending: false }),
+      db.from('owners').select('*').order('id', { ascending: true })
+    ]);
 
-  const err =
-    driversRes.error ||
-    vehiclesRes.error ||
-    settlementsRes.error ||
-    ownersRes.error;
+    const err =
+      driversRes.error ||
+      vehiclesRes.error ||
+      settlementsRes.error ||
+      ownersRes.error;
 
-  if (err) {
-    showMsg(el.appMsg, err.message || 'Помилка завантаження');
-    return;
+    if (err) {
+      showMsg(el.appMsg, err.message || 'Помилка завантаження');
+      return;
+    }
+
+    state.drivers = driversRes.data || [];
+    state.vehicles = vehiclesRes.data || [];
+    state.settlements = settlementsRes.data || [];
+    state.owners = ownersRes.data || [];
+
+    renderAll();
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Помилка завантаження даних');
   }
-
-  state.drivers = driversRes.data || [];
-  state.vehicles = vehiclesRes.data || [];
-  state.settlements = settlementsRes.data || [];
-  state.owners = ownersRes.data || [];
-
-  renderAll();
 }
 
 function renderAll() {
@@ -288,6 +369,8 @@ function renderDashboard() {
   const closedCount = settlements.filter(r => safe(r.status).toLowerCase() === 'closed').length;
 
   const recent = settlements.slice(0, 8);
+
+  if (!el.dashboardPage) return;
 
   el.dashboardPage.innerHTML = `
     <div class="cards">
@@ -325,13 +408,13 @@ function renderDashboard() {
             ? recent.map(r => `
               <div class="row">
                 <div>
-                  <strong>${safe(r.week_code)}</strong> · ${fullName(driversMap[String(r.driver_id)])}<br>
-                  <span class="muted">${vehicleLabel(vehiclesMap[String(r.vehicle_id)])}</span>
+                  <strong>${escapeHtml(safe(r.week_code))}</strong> · ${escapeHtml(fullName(driversMap[String(r.driver_id)]))}<br>
+                  <span class="muted">${escapeHtml(vehicleLabel(vehiclesMap[String(r.vehicle_id)]))}</span>
                 </div>
                 <div style="text-align:right">
                   <strong>${money(r.to_pay)}</strong><br>
                   <span class="badge ${num(r.to_pay) < 0 ? 'debt' : 'pay'}">${num(r.to_pay) < 0 ? 'debt' : 'pay'}</span>
-                  <span class="badge ${badgeClass(r.status)}">${safe(r.status) || '-'}</span>
+                  <span class="badge ${badgeClass(r.status)}">${escapeHtml(safe(r.status) || '-')}</span>
                 </div>
               </div>
             `).join('')
@@ -379,6 +462,8 @@ function renderDashboard() {
 }
 
 function renderDriversPage() {
+  if (!el.driversPage) return;
+
   const q = safe(state.filters.driverSearch).toLowerCase();
 
   const rows = state.drivers.filter(d => {
@@ -395,7 +480,7 @@ function renderDriversPage() {
   el.driversPage.innerHTML = `
     <div class="card">
       <div class="filters" style="grid-template-columns: 1fr;">
-        <input id="driversSearch" placeholder="Пошук по імені, email, телефону..." value="${safe(state.filters.driverSearch)}" />
+        <input id="driversSearch" placeholder="Пошук по імені, email, телефону..." value="${escapeHtml(safe(state.filters.driverSearch))}" />
       </div>
 
       <div class="table-wrap">
@@ -415,10 +500,10 @@ function renderDriversPage() {
                 ? rows.map(d => `
                   <tr>
                     <td>${d.id}</td>
-                    <td><strong>${fullName(d)}</strong></td>
-                    <td>${safe(d.email) || '-'}</td>
-                    <td>${safe(d.phone) || '-'}</td>
-                    <td><span class="badge ${badgeClass(d.status)}">${safe(d.status) || '-'}</span></td>
+                    <td><strong>${escapeHtml(fullName(d))}</strong></td>
+                    <td>${escapeHtml(safe(d.email) || '-')}</td>
+                    <td>${escapeHtml(safe(d.phone) || '-')}</td>
+                    <td><span class="badge ${badgeClass(d.status)}">${escapeHtml(safe(d.status) || '-')}</span></td>
                   </tr>
                 `).join('')
                 : `<tr><td colspan="5" class="empty">Немає даних</td></tr>`
@@ -430,13 +515,17 @@ function renderDriversPage() {
   `;
 
   const search = document.getElementById('driversSearch');
-  search.addEventListener('input', e => {
-    state.filters.driverSearch = e.target.value;
-    renderDriversPage();
-  });
+  if (search) {
+    search.addEventListener('input', e => {
+      state.filters.driverSearch = e.target.value;
+      renderDriversPage();
+    });
+  }
 }
 
 function renderVehiclesPage() {
+  if (!el.vehiclesPage) return;
+
   const q = safe(state.filters.vehicleSearch).toLowerCase();
   const ownersMap = mapById(state.owners);
 
@@ -455,7 +544,7 @@ function renderVehiclesPage() {
   el.vehiclesPage.innerHTML = `
     <div class="card">
       <div class="filters" style="grid-template-columns: 1fr;">
-        <input id="vehiclesSearch" placeholder="Пошук по номеру, марці, моделі..." value="${safe(state.filters.vehicleSearch)}" />
+        <input id="vehiclesSearch" placeholder="Пошук по номеру, марці, моделі..." value="${escapeHtml(safe(state.filters.vehicleSearch))}" />
       </div>
 
       <div class="table-wrap">
@@ -476,11 +565,11 @@ function renderVehiclesPage() {
                 ? rows.map(v => `
                   <tr>
                     <td>${v.id}</td>
-                    <td><strong>${safe(v.reg_number) || '-'}</strong></td>
-                    <td>${[safe(v.make), safe(v.model)].filter(Boolean).join(' ') || '-'}</td>
-                    <td>${safe(v.year) || '-'}</td>
-                    <td>${ownerLabel(ownersMap[String(v.owner_id)])}</td>
-                    <td><span class="badge ${badgeClass(v.status)}">${safe(v.status) || '-'}</span></td>
+                    <td><strong>${escapeHtml(safe(v.reg_number) || '-')}</strong></td>
+                    <td>${escapeHtml([safe(v.make), safe(v.model)].filter(Boolean).join(' ') || '-')}</td>
+                    <td>${escapeHtml(safe(v.year) || '-')}</td>
+                    <td>${escapeHtml(ownerLabel(ownersMap[String(v.owner_id)]))}</td>
+                    <td><span class="badge ${badgeClass(v.status)}">${escapeHtml(safe(v.status) || '-')}</span></td>
                   </tr>
                 `).join('')
                 : `<tr><td colspan="6" class="empty">Немає даних</td></tr>`
@@ -492,17 +581,23 @@ function renderVehiclesPage() {
   `;
 
   const search = document.getElementById('vehiclesSearch');
-  search.addEventListener('input', e => {
-    state.filters.vehicleSearch = e.target.value;
-    renderVehiclesPage();
-  });
+  if (search) {
+    search.addEventListener('input', e => {
+      state.filters.vehicleSearch = e.target.value;
+      renderVehiclesPage();
+    });
+  }
 }
 
 function renderSettlementsPage() {
+  if (!el.settlementsPage) return;
+
   const driversMap = mapById(state.drivers);
   const vehiclesMap = mapById(state.vehicles);
 
-  const weeks = Array.from(new Set(state.settlements.map(r => safe(r.week_code)).filter(Boolean))).sort().reverse();
+  const weeks = Array.from(
+    new Set(state.settlements.map(r => safe(r.week_code)).filter(Boolean))
+  ).sort().reverse();
 
   const q = safe(state.filters.settlementSearch).toLowerCase();
   const week = state.filters.settlementWeek;
@@ -530,12 +625,12 @@ function renderSettlementsPage() {
   el.settlementsPage.innerHTML = `
     <div class="card">
       <div class="filters">
-        <input id="settlementsSearch" placeholder="Пошук по водію, email, авто..." value="${safe(state.filters.settlementSearch)}" />
+        <input id="settlementsSearch" placeholder="Пошук по водію, email, авто..." value="${escapeHtml(safe(state.filters.settlementSearch))}" />
 
         <select id="settlementsWeek">
           <option value="all">Усі тижні</option>
           ${weeks.map(w => `
-            <option value="${w}" ${w === state.filters.settlementWeek ? 'selected' : ''}>${w}</option>
+            <option value="${escapeHtml(w)}" ${w === state.filters.settlementWeek ? 'selected' : ''}>${escapeHtml(w)}</option>
           `).join('')}
         </select>
 
@@ -567,12 +662,12 @@ function renderSettlementsPage() {
                 ? rows.map(r => `
                   <tr>
                     <td>${r.id}</td>
-                    <td><strong>${safe(r.week_code) || '-'}</strong></td>
+                    <td><strong>${escapeHtml(safe(r.week_code) || '-')}</strong></td>
                     <td>
-                      <strong>${fullName(driversMap[String(r.driver_id)])}</strong><br>
-                      <span class="muted">${safe(driversMap[String(r.driver_id)]?.email) || ''}</span>
+                      <strong>${escapeHtml(fullName(driversMap[String(r.driver_id)]))}</strong><br>
+                      <span class="muted">${escapeHtml(safe(driversMap[String(r.driver_id)]?.email) || '')}</span>
                     </td>
-                    <td>${vehicleLabel(vehiclesMap[String(r.vehicle_id)])}</td>
+                    <td>${escapeHtml(vehicleLabel(vehiclesMap[String(r.vehicle_id)]))}</td>
                     <td>${money(r.base_net)}</td>
                     <td>${money(r.bonus_total)}</td>
                     <td>${money(r.cash_collected)}</td>
@@ -580,7 +675,7 @@ function renderSettlementsPage() {
                       <strong>${money(r.to_pay)}</strong><br>
                       <span class="badge ${num(r.to_pay) < 0 ? 'debt' : 'pay'}">${num(r.to_pay) < 0 ? 'debt' : 'pay'}</span>
                     </td>
-                    <td><span class="badge ${badgeClass(r.status)}">${safe(r.status) || '-'}</span></td>
+                    <td><span class="badge ${badgeClass(r.status)}">${escapeHtml(safe(r.status) || '-')}</span></td>
                   </tr>
                 `).join('')
                 : `<tr><td colspan="9" class="empty">Немає даних</td></tr>`
@@ -591,57 +686,78 @@ function renderSettlementsPage() {
     </div>
   `;
 
-  document.getElementById('settlementsSearch').addEventListener('input', e => {
-    state.filters.settlementSearch = e.target.value;
-    renderSettlementsPage();
+  const search = document.getElementById('settlementsSearch');
+  const weekSelect = document.getElementById('settlementsWeek');
+  const statusSelect = document.getElementById('settlementsStatus');
+
+  if (search) {
+    search.addEventListener('input', e => {
+      state.filters.settlementSearch = e.target.value;
+      renderSettlementsPage();
+    });
+  }
+
+  if (weekSelect) {
+    weekSelect.addEventListener('change', e => {
+      state.filters.settlementWeek = e.target.value;
+      renderSettlementsPage();
+    });
+  }
+
+  if (statusSelect) {
+    statusSelect.addEventListener('change', e => {
+      state.filters.settlementStatus = e.target.value;
+      renderSettlementsPage();
+    });
+  }
+}
+
+function bindEvents() {
+  if (el.signInBtn) el.signInBtn.addEventListener('click', signIn);
+  if (el.signUpBtn) el.signUpBtn.addEventListener('click', signUp);
+  if (el.logoutBtn) el.logoutBtn.addEventListener('click', signOut);
+  if (el.refreshBtn) el.refreshBtn.addEventListener('click', loadAllData);
+
+  menuButtons().forEach(btn => {
+    btn.addEventListener('click', () => setPage(btn.dataset.page));
   });
 
-  document.getElementById('settlementsWeek').addEventListener('change', e => {
-    state.filters.settlementWeek = e.target.value;
-    renderSettlementsPage();
-  });
+  if (el.password) {
+    el.password.addEventListener('keydown', e => {
+      if (e.key === 'Enter') signIn();
+    });
+  }
+}
 
-  document.getElementById('settlementsStatus').addEventListener('change', e => {
-    state.filters.settlementStatus = e.target.value;
-    renderSettlementsPage();
+function subscribeAuth() {
+  db.auth.onAuthStateChange(async (_event, session) => {
+    state.session = session || null;
+
+    if (!session) {
+      renderAppShell(false);
+      return;
+    }
+
+    renderAppShell(true);
+
+    if (el.userEmail) {
+      el.userEmail.textContent = session.user?.email || '';
+    }
+
+    await loadAllData();
   });
 }
 
-el.signInBtn.addEventListener('click', signIn);
-el.signUpBtn.addEventListener('click', signUp);
-el.logoutBtn.addEventListener('click', signOut);
-el.refreshBtn.addEventListener('click', loadAllData);
-
-document.querySelectorAll('.menu-btn').forEach(btn => {
-  btn.addEventListener('click', () => setPage(btn.dataset.page));
-});
-
-db.auth.onAuthStateChange(async () => {
+async function initApp() {
+  collectElements();
+  bindEvents();
+  subscribeAuth();
+  setPage('dashboard');
   await loadSessionAndData();
-});
+}
 
-setPage('dashboard');
-loadSessionAndData();
-
-document.addEventListener('DOMContentLoaded', initApp);
-
-function initApp() {
-  console.log('initApp started');
-
-  if (!el.signInBtn) console.error('signInBtn not found');
-  if (!el.signUpBtn) console.error('signUpBtn not found');
-  if (!el.email) console.error('email input not found');
-  if (!el.password) console.error('password input not found');
-
-  if (el.signInBtn) {
-    el.signInBtn.addEventListener('click', signIn);
-  }
-
-  if (el.signUpBtn) {
-    el.signUpBtn.addEventListener('click', signUp);
-  }
-
-  if (el.logoutBtn) {
-    el.logoutBtn.addEventListener('click', logout);
-  }
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp, { once: true });
+} else {
+  initApp();
 }
