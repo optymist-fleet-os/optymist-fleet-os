@@ -8,69 +8,65 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
-  <div class="container">
-    <header class="topbar">
-      <div>
-        <h1>OPTYMIST Fleet OS</h1>
-        <p>Supabase CRM MVP</p>
-      </div>
-      <div class="topbar-actions">
-        <span id="userEmail" class="muted"></span>
-        <button id="logoutBtn" class="hidden">Вийти</button>
-      </div>
-    </header>
+  <div id="authView" class="auth-wrap">
+    <div class="auth-card">
+      <h1>OPTYMIST Fleet OS</h1>
+      <p class="muted">Supabase CRM</p>
 
-    <div id="msg"></div>
+      <div id="msg"></div>
 
-    <section id="authBox" class="card">
-      <h2>Вхід</h2>
-      <div class="grid2">
+      <div class="auth-grid">
         <input id="email" type="email" placeholder="Email" />
         <input id="password" type="password" placeholder="Пароль" />
       </div>
-      <div class="actions">
+
+      <div class="auth-actions">
         <button id="signInBtn">Увійти</button>
         <button id="signUpBtn" class="secondary">Зареєструватися</button>
       </div>
-    </section>
+    </div>
+  </div>
 
-    <section id="appBox" class="hidden">
-      <div class="cards">
-        <div class="metric card">
-          <div class="label">Водії</div>
-          <div id="driversCount" class="value">0</div>
-        </div>
-        <div class="metric card">
-          <div class="label">Авто</div>
-          <div id="vehiclesCount" class="value">0</div>
-        </div>
-        <div class="metric card">
-          <div class="label">Розрахунки</div>
-          <div id="settlementsCount" class="value">0</div>
-        </div>
-        <div class="metric card">
-          <div class="label">До виплати</div>
-          <div id="toPayTotal" class="value">0,00 zł</div>
-        </div>
+  <div id="appView" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-title">OPTYMIST</div>
+        <div class="brand-sub">Fleet OS</div>
       </div>
 
-      <div class="layout">
-        <section class="card">
-          <h2>Останні розрахунки</h2>
-          <div id="settlementsList"></div>
-        </section>
+      <nav class="menu">
+        <button class="menu-btn active" data-page="dashboard">Dashboard</button>
+        <button class="menu-btn" data-page="drivers">Водії</button>
+        <button class="menu-btn" data-page="vehicles">Авто</button>
+        <button class="menu-btn" data-page="settlements">Розрахунки</button>
+      </nav>
 
-        <section class="card">
-          <h2>Водії</h2>
-          <div id="driversList"></div>
-        </section>
-
-        <section class="card">
-          <h2>Авто</h2>
-          <div id="vehiclesList"></div>
-        </section>
+      <div class="sidebar-footer">
+        <div class="muted small">Supabase CRM MVP</div>
       </div>
-    </section>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">Dashboard</h1>
+          <div class="muted" id="pageSubtitle">Back office + settlements</div>
+        </div>
+
+        <div class="topbar-actions">
+          <span id="userEmail" class="muted"></span>
+          <button id="refreshBtn" class="secondary">Оновити</button>
+          <button id="logoutBtn">Вийти</button>
+        </div>
+      </header>
+
+      <div id="appMsg"></div>
+
+      <section id="page-dashboard" class="page"></section>
+      <section id="page-drivers" class="page hidden"></section>
+      <section id="page-vehicles" class="page hidden"></section>
+      <section id="page-settlements" class="page hidden"></section>
+    </main>
   </div>
 
   <script src="./app.js"></script>
