@@ -3,21 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>OPTYMIST Fleet OS</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles.css?v=20260424-1" />
   <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <div id="authView" class="auth-wrap">
     <div class="auth-card">
       <h1>OPTYMIST Fleet OS</h1>
-      <p class="muted">Supabase CRM</p>
+      <p class="muted">Settlement CRM MVP</p>
 
       <div id="msg"></div>
 
       <div class="auth-grid">
-        <input id="email" type="email" placeholder="Email" />
-        <input id="password" type="password" placeholder="Пароль" />
+        <input id="email" type="email" placeholder="Email" autocomplete="email" />
+        <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" />
       </div>
 
       <div class="auth-actions">
@@ -42,7 +45,7 @@
       </nav>
 
       <div class="sidebar-footer">
-        <div class="muted small">Supabase CRM MVP</div>
+        <div class="muted small">Settlement CRM MVP</div>
       </div>
     </aside>
 
@@ -50,7 +53,7 @@
       <header class="topbar">
         <div>
           <h1 id="pageTitle">Dashboard</h1>
-          <div class="muted" id="pageSubtitle">Back office + settlements</div>
+          <div class="muted" id="pageSubtitle">Settlement-first back office</div>
         </div>
 
         <div class="topbar-actions">
@@ -69,6 +72,6 @@
     </main>
   </div>
 
-  <script defer src="/app.js"></script>
+  <script defer src="/app.js?v=20260424-1"></script>
 </body>
 </html>
