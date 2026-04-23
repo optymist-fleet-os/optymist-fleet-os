@@ -760,8 +760,20 @@ async function initApp() {
   bindEvents();
   subscribeAuth();
   setPage('dashboard');
+  renderAll();
   await loadSessionAndData();
 }
+
+window.addEventListener('error', event => {
+  console.error('Global error:', event.error || event.message);
+  showMsg(el.appMsg || el.msg, (event.error && event.error.message) || event.message || 'JS error');
+});
+
+window.addEventListener('unhandledrejection', event => {
+  const msg = (event.reason && event.reason.message) || String(event.reason || 'Unhandled promise rejection');
+  console.error('Unhandled rejection:', event.reason);
+  showMsg(el.appMsg || el.msg, msg);
+});
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initApp, { once: true });
