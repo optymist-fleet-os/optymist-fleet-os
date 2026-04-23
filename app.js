@@ -344,10 +344,17 @@ async function loadAllData() {
 }
 
 function renderAll() {
-  renderDashboard();
-  renderDriversPage();
-  renderVehiclesPage();
-  renderSettlementsPage();
+  try {
+    console.log('renderAll started');
+    renderDashboard();
+    renderDriversPage();
+    renderVehiclesPage();
+    renderSettlementsPage();
+    console.log('renderAll done');
+  } catch (e) {
+    console.error('renderAll error:', e);
+    showMsg(el.appMsg, e.message || 'Помилка рендеру сторінки');
+  }
 }
 
 function renderDashboard() {
