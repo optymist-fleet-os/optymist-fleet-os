@@ -2,6 +2,7 @@ const SUPABASE_URL = 'https://tegravrxaqcuktwjanzm.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_FWerGr6XL94LiVQs2Lel-A_2M3sTKIu';
 
 const { createClient } = supabase;
+
 const db = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
@@ -12,21 +13,26 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const state = {
   session: null,
+  profile: null,
+  roles: [],
   currentPage: 'dashboard',
   drivers: [],
   vehicles: [],
-  settlements: [],
   owners: [],
+  periods: [],
+  settlements: [],
   filters: {
     driverSearch: '',
     vehicleSearch: '',
     settlementSearch: '',
-    settlementWeek: 'all',
+    settlementPeriod: 'all',
     settlementStatus: 'all'
   }
 };
 
 const el = {};
+let authSubscription = null;
+let isLoadingData = false;
 
 function safe(v) {
   return v == null ? '' : String(v).trim();
@@ -63,42 +69,8 @@ function clearMsg(target) {
   target.innerHTML = '';
 }
 
-function badgeClass(status) {
-  const s = safe(status).toLowerCase();
-  if (s === 'ready') return 'ready';
-  if (s === 'closed') return 'closed';
-  if (s === 'active') return 'active';
-  if (s === 'driving') return 'driving';
-  return '';
-}
-
-function fullName(driver) {
-  if (!driver) return '';
-  return (
-    safe(driver.full_name) ||
-    [safe(driver.first_name), safe(driver.last_name)].filter(Boolean).join(' ') ||
-    safe(driver.email) ||
-    `Driver #${driver.id}`
-  );
-}
-
-function vehicleLabel(vehicle) {
-  if (!vehicle) return '-';
-  return (
-    safe(vehicle.reg_number) ||
-    [safe(vehicle.make), safe(vehicle.model), safe(vehicle.year)].filter(Boolean).join(' ') ||
-    `Vehicle #${vehicle.id}`
-  );
-}
-
-function ownerLabel(owner) {
-  if (!owner) return '-';
-  return (
-    safe(owner.full_name) ||
-    safe(owner.company_name) ||
-    safe(owner.name) ||
-    `Owner #${owner.id}`
-  );
+function qs(id) {
+  return document.getElementById(id);
 }
 
 function mapById(list) {
@@ -109,8 +81,54 @@ function mapById(list) {
   return m;
 }
 
-function qs(id) {
-  return document.getElementById(id);
+function fullName(driver) {
+  if (!driver) return '-';
+  return (
+    safe(driver.full_name) ||
+    [safe(driver.first_name), safe(driver.last_name)].filter(Boolean).join(' ') ||
+    safe(driver.email) ||
+    `Driver #${driver.id}`
+  );
+}
+
+function ownerLabel(owner) {
+  if (!owner) return '-';
+  return (
+    safe(owner.company_name) ||
+    safe(owner.full_name) ||
+    `Owner #${owner.id}`
+  );
+}
+
+function vehicleLabel(vehicle) {
+  if (!vehicle) return '-';
+  return (
+    safe(vehicle.plate_number) ||
+    [safe(vehicle.brand), safe(vehicle.model), safe(vehicle.year)].filter(Boolean).join(' ') ||
+    `Vehicle #${vehicle.id}`
+  );
+}
+
+function badgeClass(status) {
+  const s = safe(status).toLowerCase();
+  if (['active', 'ready', 'approved', 'calculated', 'paid', 'sent'].includes(s)) return 'active';
+  if (['closed', 'archived', 'inactive'].includes(s)) return 'closed';
+  if (['open', 'draft', 'pending'].includes(s)) return 'ready';
+  return '';
+}
+
+function periodLabel(period) {
+  if (!period) return '-';
+  return `${safe(period.date_from)} → ${safe(period.date_to)}`;
+}
+
+function settlementPeriodLabel(settlement, periodsMap) {
+  const period = periodsMap[String(settlement.period_id)];
+  return periodLabel(period);
+}
+
+function isStaff() {
+  return state.roles.includes('admin') || state.roles.includes('operator');
 }
 
 function collectElements() {
@@ -172,19 +190,19 @@ function setPage(page) {
   if (el.pageTitle && el.pageSubtitle) {
     if (page === 'dashboard') {
       el.pageTitle.textContent = 'Dashboard';
-      el.pageSubtitle.textContent = 'Back office + settlements';
+      el.pageSubtitle.textContent = 'Settlement-first back office';
     }
     if (page === 'drivers') {
       el.pageTitle.textContent = 'Водії';
-      el.pageSubtitle.textContent = 'Список водіїв та їх дані';
+      el.pageSubtitle.textContent = 'Список водіїв';
     }
     if (page === 'vehicles') {
       el.pageTitle.textContent = 'Авто';
-      el.pageSubtitle.textContent = 'Список авто та статуси';
+      el.pageSubtitle.textContent = 'Список авто та власників';
     }
     if (page === 'settlements') {
       el.pageTitle.textContent = 'Розрахунки';
-      el.pageSubtitle.textContent = 'Тижневі розрахунки водіїв';
+      el.pageSubtitle.textContent = 'Driver settlements по періодах';
     }
   }
 }
@@ -221,7 +239,7 @@ async function signUp() {
     } else {
       showMsg(
         el.msg,
-        'Акаунт створено. Якщо увімкнене підтвердження email — підтвердь пошту, потім увійди.',
+        'Акаунт створено. Якщо потрібне підтвердження email — підтвердь пошту і увійди.',
         'success'
       );
     }
@@ -270,8 +288,23 @@ async function signOut() {
   }
 
   state.session = null;
+  state.profile = null;
+  state.roles = [];
   renderAppShell(false);
   clearMsg(el.appMsg);
+}
+
+async function loadProfileAndRoles(userId) {
+  const [profileRes, rolesRes] = await Promise.all([
+    db.from('profiles').select('*').eq('id', userId).maybeSingle(),
+    db.from('user_roles').select('role').eq('user_id', userId)
+  ]);
+
+  if (profileRes.error) throw profileRes.error;
+  if (rolesRes.error) throw rolesRes.error;
+
+  state.profile = profileRes.data || null;
+  state.roles = (rolesRes.data || []).map(r => r.role);
 }
 
 async function loadSessionAndData() {
@@ -293,39 +326,58 @@ async function loadSessionAndData() {
       return;
     }
 
+    await loadProfileAndRoles(session.user.id);
+
+    if (!isStaff()) {
+      await db.auth.signOut();
+      renderAppShell(false);
+      showMsg(el.msg, 'У цього акаунта немає ролі admin/operator');
+      return;
+    }
+
     renderAppShell(true);
 
     if (el.userEmail) {
-      el.userEmail.textContent = session.user?.email || '';
+      el.userEmail.textContent =
+        state.profile?.email ||
+        session.user?.email ||
+        '';
     }
 
     await loadAllData();
   } catch (e) {
-    showMsg(el.appMsg, e.message || 'Помилка завантаження сесії');
+    console.error(e);
+    showMsg(el.appMsg || el.msg, e.message || 'Помилка завантаження сесії');
   }
 }
 
 async function loadAllData() {
+  if (isLoadingData) return;
+  isLoadingData = true;
+
   clearMsg(el.appMsg);
 
   try {
     const [
       driversRes,
       vehiclesRes,
-      settlementsRes,
-      ownersRes
+      ownersRes,
+      periodsRes,
+      settlementsRes
     ] = await Promise.all([
-      db.from('drivers').select('*').order('id', { ascending: true }),
-      db.from('vehicles').select('*').order('id', { ascending: true }),
-      db.from('driver_settlements').select('*').order('id', { ascending: false }),
-      db.from('owners').select('*').order('id', { ascending: true })
+      db.from('drivers').select('*').order('created_at', { ascending: false }),
+      db.from('vehicles').select('*').order('created_at', { ascending: false }),
+      db.from('vehicle_owners').select('*').order('created_at', { ascending: false }),
+      db.from('settlement_periods').select('*').order('date_from', { ascending: false }),
+      db.from('driver_settlements').select('*').order('created_at', { ascending: false })
     ]);
 
     const err =
       driversRes.error ||
       vehiclesRes.error ||
-      settlementsRes.error ||
-      ownersRes.error;
+      ownersRes.error ||
+      periodsRes.error ||
+      settlementsRes.error;
 
     if (err) {
       showMsg(el.appMsg, err.message || 'Помилка завантаження');
@@ -334,23 +386,25 @@ async function loadAllData() {
 
     state.drivers = driversRes.data || [];
     state.vehicles = vehiclesRes.data || [];
-    state.settlements = settlementsRes.data || [];
     state.owners = ownersRes.data || [];
+    state.periods = periodsRes.data || [];
+    state.settlements = settlementsRes.data || [];
 
     renderAll();
   } catch (e) {
+    console.error(e);
     showMsg(el.appMsg, e.message || 'Помилка завантаження даних');
+  } finally {
+    isLoadingData = false;
   }
 }
 
 function renderAll() {
   try {
-    console.log('renderAll started');
     renderDashboard();
     renderDriversPage();
     renderVehiclesPage();
     renderSettlementsPage();
-    console.log('renderAll done');
   } catch (e) {
     console.error('renderAll error:', e);
     showMsg(el.appMsg, e.message || 'Помилка рендеру сторінки');
@@ -359,21 +413,19 @@ function renderAll() {
 
 function renderDashboard() {
   const settlements = state.settlements;
+  const periodsMap = mapById(state.periods);
   const driversMap = mapById(state.drivers);
   const vehiclesMap = mapById(state.vehicles);
 
-  const grossPay = settlements
-    .filter(r => num(r.to_pay) > 0)
-    .reduce((sum, r) => sum + num(r.to_pay), 0);
+  const payoutTotal = settlements.reduce((sum, r) => sum + num(r.payout_to_driver), 0);
 
-  const debtTotal = settlements
-    .filter(r => num(r.to_pay) < 0)
-    .reduce((sum, r) => sum + Math.abs(num(r.to_pay)), 0);
+  const debtTotal = settlements.reduce((sum, r) => {
+    const balance = num(r.carry_forward_balance);
+    return sum + (balance < 0 ? Math.abs(balance) : 0);
+  }, 0);
 
-  const netTotal = settlements.reduce((sum, r) => sum + num(r.to_pay), 0);
-
-  const readyCount = settlements.filter(r => safe(r.status).toLowerCase() === 'ready').length;
-  const closedCount = settlements.filter(r => safe(r.status).toLowerCase() === 'closed').length;
+  const grossIncomeTotal = settlements.reduce((sum, r) => sum + num(r.gross_platform_income), 0);
+  const commissionTotal = settlements.reduce((sum, r) => sum + num(r.company_commission), 0);
 
   const recent = settlements.slice(0, 8);
 
@@ -390,20 +442,28 @@ function renderDashboard() {
         <div class="metric-value">${state.vehicles.length}</div>
       </div>
       <div class="card">
-        <div class="metric-label">Розрахунки</div>
-        <div class="metric-value">${settlements.length}</div>
+        <div class="metric-label">Власники</div>
+        <div class="metric-value">${state.owners.length}</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">Періоди</div>
+        <div class="metric-value">${state.periods.length}</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">Gross income</div>
+        <div class="metric-value">${money(grossIncomeTotal)}</div>
+      </div>
+      <div class="card">
+        <div class="metric-label">Комісія компанії</div>
+        <div class="metric-value">${money(commissionTotal)}</div>
       </div>
       <div class="card">
         <div class="metric-label">До виплати водіям</div>
-        <div class="metric-value">${money(grossPay)}</div>
+        <div class="metric-value">${money(payoutTotal)}</div>
       </div>
       <div class="card">
-        <div class="metric-label">Борг водіїв</div>
+        <div class="metric-label">Борг / carry forward</div>
         <div class="metric-value">${money(debtTotal)}</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">Чистий баланс</div>
-        <div class="metric-value">${money(netTotal)}</div>
       </div>
     </div>
 
@@ -415,12 +475,12 @@ function renderDashboard() {
             ? recent.map(r => `
               <div class="row">
                 <div>
-                  <strong>${escapeHtml(safe(r.week_code))}</strong> · ${escapeHtml(fullName(driversMap[String(r.driver_id)]))}<br>
+                  <strong>${escapeHtml(settlementPeriodLabel(r, periodsMap))}</strong><br>
+                  <span class="muted">${escapeHtml(fullName(driversMap[String(r.driver_id)]))}</span><br>
                   <span class="muted">${escapeHtml(vehicleLabel(vehiclesMap[String(r.vehicle_id)]))}</span>
                 </div>
                 <div style="text-align:right">
-                  <strong>${money(r.to_pay)}</strong><br>
-                  <span class="badge ${num(r.to_pay) < 0 ? 'debt' : 'pay'}">${num(r.to_pay) < 0 ? 'debt' : 'pay'}</span>
+                  <strong>${money(r.payout_to_driver)}</strong><br>
                   <span class="badge ${badgeClass(r.status)}">${escapeHtml(safe(r.status) || '-')}</span>
                 </div>
               </div>
@@ -432,36 +492,36 @@ function renderDashboard() {
       <div class="card">
         <h3 class="card-title">Статуси</h3>
         <div class="row">
-          <div>READY</div>
-          <div><strong>${readyCount}</strong></div>
-        </div>
-        <div class="row">
-          <div>CLOSED</div>
-          <div><strong>${closedCount}</strong></div>
-        </div>
-        <div class="row">
           <div>Активні водії</div>
           <div><strong>${state.drivers.filter(d => safe(d.status).toLowerCase() === 'active').length}</strong></div>
         </div>
         <div class="row">
           <div>Активні авто</div>
-          <div><strong>${state.vehicles.filter(v => safe(v.status).toLowerCase() === 'driving').length}</strong></div>
+          <div><strong>${state.vehicles.filter(v => safe(v.status).toLowerCase() === 'active').length}</strong></div>
+        </div>
+        <div class="row">
+          <div>Розрахунки CALCULATED</div>
+          <div><strong>${settlements.filter(r => safe(r.status).toLowerCase() === 'calculated').length}</strong></div>
+        </div>
+        <div class="row">
+          <div>Розрахунки SENT</div>
+          <div><strong>${settlements.filter(r => safe(r.status).toLowerCase() === 'sent').length}</strong></div>
         </div>
       </div>
 
       <div class="card">
         <h3 class="card-title">Швидка перевірка</h3>
         <div class="row">
-          <div>Позитивні розрахунки</div>
-          <div><strong>${settlements.filter(r => num(r.to_pay) > 0).length}</strong></div>
+          <div>Документи settlement</div>
+          <div><strong>${settlements.filter(r => safe(r.pdf_url)).length}</strong></div>
         </div>
         <div class="row">
-          <div>Негативні розрахунки</div>
-          <div><strong>${settlements.filter(r => num(r.to_pay) < 0).length}</strong></div>
+          <div>Позитивний payout</div>
+          <div><strong>${settlements.filter(r => num(r.payout_to_driver) > 0).length}</strong></div>
         </div>
         <div class="row">
-          <div>Унікальні тижні</div>
-          <div><strong>${new Set(settlements.map(r => safe(r.week_code))).size}</strong></div>
+          <div>Нульовий payout</div>
+          <div><strong>${settlements.filter(r => num(r.payout_to_driver) === 0).length}</strong></div>
         </div>
       </div>
     </div>
@@ -478,7 +538,9 @@ function renderDriversPage() {
       fullName(d),
       safe(d.email),
       safe(d.phone),
-      safe(d.status)
+      safe(d.status),
+      safe(d.contract_status),
+      safe(d.onboarding_stage)
     ].join(' ').toLowerCase();
 
     return !q || blob.includes(q);
@@ -486,7 +548,7 @@ function renderDriversPage() {
 
   el.driversPage.innerHTML = `
     <div class="card">
-      <div class="filters" style="grid-template-columns: 1fr;">
+      <div class="filters" style="grid-template-columns:1fr;">
         <input id="driversSearch" placeholder="Пошук по імені, email, телефону..." value="${escapeHtml(safe(state.filters.driverSearch))}" />
       </div>
 
@@ -499,6 +561,8 @@ function renderDriversPage() {
               <th>Email</th>
               <th>Телефон</th>
               <th>Статус</th>
+              <th>Контракт</th>
+              <th>Онбординг</th>
             </tr>
           </thead>
           <tbody>
@@ -506,14 +570,16 @@ function renderDriversPage() {
               rows.length
                 ? rows.map(d => `
                   <tr>
-                    <td>${d.id}</td>
+                    <td>${escapeHtml(String(d.id).slice(0, 8))}</td>
                     <td><strong>${escapeHtml(fullName(d))}</strong></td>
                     <td>${escapeHtml(safe(d.email) || '-')}</td>
                     <td>${escapeHtml(safe(d.phone) || '-')}</td>
                     <td><span class="badge ${badgeClass(d.status)}">${escapeHtml(safe(d.status) || '-')}</span></td>
+                    <td>${escapeHtml(safe(d.contract_status) || '-')}</td>
+                    <td>${escapeHtml(safe(d.onboarding_stage) || '-')}</td>
                   </tr>
                 `).join('')
-                : `<tr><td colspan="5" class="empty">Немає даних</td></tr>`
+                : `<tr><td colspan="7" class="empty">Немає даних</td></tr>`
             }
           </tbody>
         </table>
@@ -539,9 +605,9 @@ function renderVehiclesPage() {
   const rows = state.vehicles.filter(v => {
     const blob = [
       vehicleLabel(v),
-      safe(v.make),
+      safe(v.plate_number),
+      safe(v.brand),
       safe(v.model),
-      safe(v.year),
       safe(v.status)
     ].join(' ').toLowerCase();
 
@@ -550,7 +616,7 @@ function renderVehiclesPage() {
 
   el.vehiclesPage.innerHTML = `
     <div class="card">
-      <div class="filters" style="grid-template-columns: 1fr;">
+      <div class="filters" style="grid-template-columns:1fr;">
         <input id="vehiclesSearch" placeholder="Пошук по номеру, марці, моделі..." value="${escapeHtml(safe(state.filters.vehicleSearch))}" />
       </div>
 
@@ -564,6 +630,8 @@ function renderVehiclesPage() {
               <th>Рік</th>
               <th>Власник</th>
               <th>Статус</th>
+              <th>Страховка</th>
+              <th>Огляд</th>
             </tr>
           </thead>
           <tbody>
@@ -571,15 +639,17 @@ function renderVehiclesPage() {
               rows.length
                 ? rows.map(v => `
                   <tr>
-                    <td>${v.id}</td>
-                    <td><strong>${escapeHtml(safe(v.reg_number) || '-')}</strong></td>
-                    <td>${escapeHtml([safe(v.make), safe(v.model)].filter(Boolean).join(' ') || '-')}</td>
+                    <td>${escapeHtml(String(v.id).slice(0, 8))}</td>
+                    <td><strong>${escapeHtml(safe(v.plate_number) || '-')}</strong></td>
+                    <td>${escapeHtml([safe(v.brand), safe(v.model)].filter(Boolean).join(' ') || '-')}</td>
                     <td>${escapeHtml(safe(v.year) || '-')}</td>
                     <td>${escapeHtml(ownerLabel(ownersMap[String(v.owner_id)]))}</td>
                     <td><span class="badge ${badgeClass(v.status)}">${escapeHtml(safe(v.status) || '-')}</span></td>
+                    <td>${escapeHtml(safe(v.insurance_expiry) || '-')}</td>
+                    <td>${escapeHtml(safe(v.inspection_expiry) || '-')}</td>
                   </tr>
                 `).join('')
-                : `<tr><td colspan="6" class="empty">Немає даних</td></tr>`
+                : `<tr><td colspan="8" class="empty">Немає даних</td></tr>`
             }
           </tbody>
         </table>
@@ -601,32 +671,35 @@ function renderSettlementsPage() {
 
   const driversMap = mapById(state.drivers);
   const vehiclesMap = mapById(state.vehicles);
+  const periodsMap = mapById(state.periods);
 
-  const weeks = Array.from(
-    new Set(state.settlements.map(r => safe(r.week_code)).filter(Boolean))
-  ).sort().reverse();
+  const periodOptions = state.periods.map(p => ({
+    value: String(p.id),
+    label: periodLabel(p)
+  }));
 
   const q = safe(state.filters.settlementSearch).toLowerCase();
-  const week = state.filters.settlementWeek;
-  const status = state.filters.settlementStatus;
+  const periodFilter = safe(state.filters.settlementPeriod);
+  const statusFilter = safe(state.filters.settlementStatus).toLowerCase();
 
   const rows = state.settlements.filter(r => {
     const driver = driversMap[String(r.driver_id)];
     const vehicle = vehiclesMap[String(r.vehicle_id)];
+    const period = periodsMap[String(r.period_id)];
 
     const blob = [
-      safe(r.week_code),
+      settlementPeriodLabel(r, periodsMap),
       fullName(driver),
       safe(driver?.email),
       vehicleLabel(vehicle),
       safe(r.status)
     ].join(' ').toLowerCase();
 
-    const weekOk = week === 'all' || safe(r.week_code) === week;
-    const statusOk = status === 'all' || safe(r.status).toLowerCase() === status.toLowerCase();
+    const periodOk = periodFilter === 'all' || String(r.period_id) === periodFilter;
+    const statusOk = statusFilter === 'all' || safe(r.status).toLowerCase() === statusFilter;
     const searchOk = !q || blob.includes(q);
 
-    return weekOk && statusOk && searchOk;
+    return periodOk && statusOk && searchOk && period;
   });
 
   el.settlementsPage.innerHTML = `
@@ -634,17 +707,22 @@ function renderSettlementsPage() {
       <div class="filters">
         <input id="settlementsSearch" placeholder="Пошук по водію, email, авто..." value="${escapeHtml(safe(state.filters.settlementSearch))}" />
 
-        <select id="settlementsWeek">
-          <option value="all">Усі тижні</option>
-          ${weeks.map(w => `
-            <option value="${escapeHtml(w)}" ${w === state.filters.settlementWeek ? 'selected' : ''}>${escapeHtml(w)}</option>
+        <select id="settlementsPeriod">
+          <option value="all">Усі періоди</option>
+          ${periodOptions.map(p => `
+            <option value="${escapeHtml(p.value)}" ${p.value === state.filters.settlementPeriod ? 'selected' : ''}>
+              ${escapeHtml(p.label)}
+            </option>
           `).join('')}
         </select>
 
         <select id="settlementsStatus">
           <option value="all">Усі статуси</option>
-          <option value="ready" ${state.filters.settlementStatus === 'ready' ? 'selected' : ''}>READY</option>
-          <option value="closed" ${state.filters.settlementStatus === 'closed' ? 'selected' : ''}>CLOSED</option>
+          <option value="draft" ${state.filters.settlementStatus === 'draft' ? 'selected' : ''}>DRAFT</option>
+          <option value="calculated" ${state.filters.settlementStatus === 'calculated' ? 'selected' : ''}>CALCULATED</option>
+          <option value="approved" ${state.filters.settlementStatus === 'approved' ? 'selected' : ''}>APPROVED</option>
+          <option value="sent" ${state.filters.settlementStatus === 'sent' ? 'selected' : ''}>SENT</option>
+          <option value="paid" ${state.filters.settlementStatus === 'paid' ? 'selected' : ''}>PAID</option>
         </select>
       </div>
 
@@ -652,14 +730,15 @@ function renderSettlementsPage() {
         <table>
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Тиждень</th>
+              <th>Період</th>
               <th>Водій</th>
               <th>Авто</th>
-              <th>Base net</th>
+              <th>Gross</th>
               <th>Bonus</th>
               <th>Cash</th>
-              <th>To pay</th>
+              <th>Комісія</th>
+              <th>Оренда</th>
+              <th>Payout</th>
               <th>Статус</th>
             </tr>
           </thead>
@@ -668,24 +747,22 @@ function renderSettlementsPage() {
               rows.length
                 ? rows.map(r => `
                   <tr>
-                    <td>${r.id}</td>
-                    <td><strong>${escapeHtml(safe(r.week_code) || '-')}</strong></td>
+                    <td><strong>${escapeHtml(settlementPeriodLabel(r, periodsMap))}</strong></td>
                     <td>
                       <strong>${escapeHtml(fullName(driversMap[String(r.driver_id)]))}</strong><br>
                       <span class="muted">${escapeHtml(safe(driversMap[String(r.driver_id)]?.email) || '')}</span>
                     </td>
                     <td>${escapeHtml(vehicleLabel(vehiclesMap[String(r.vehicle_id)]))}</td>
-                    <td>${money(r.base_net)}</td>
-                    <td>${money(r.bonus_total)}</td>
+                    <td>${money(r.gross_platform_income)}</td>
+                    <td>${money(r.bonuses)}</td>
                     <td>${money(r.cash_collected)}</td>
-                    <td>
-                      <strong>${money(r.to_pay)}</strong><br>
-                      <span class="badge ${num(r.to_pay) < 0 ? 'debt' : 'pay'}">${num(r.to_pay) < 0 ? 'debt' : 'pay'}</span>
-                    </td>
+                    <td>${money(r.company_commission)}</td>
+                    <td>${money(r.rent_total)}</td>
+                    <td><strong>${money(r.payout_to_driver)}</strong></td>
                     <td><span class="badge ${badgeClass(r.status)}">${escapeHtml(safe(r.status) || '-')}</span></td>
                   </tr>
                 `).join('')
-                : `<tr><td colspan="9" class="empty">Немає даних</td></tr>`
+                : `<tr><td colspan="10" class="empty">Немає даних</td></tr>`
             }
           </tbody>
         </table>
@@ -694,7 +771,7 @@ function renderSettlementsPage() {
   `;
 
   const search = document.getElementById('settlementsSearch');
-  const weekSelect = document.getElementById('settlementsWeek');
+  const periodSelect = document.getElementById('settlementsPeriod');
   const statusSelect = document.getElementById('settlementsStatus');
 
   if (search) {
@@ -704,9 +781,9 @@ function renderSettlementsPage() {
     });
   }
 
-  if (weekSelect) {
-    weekSelect.addEventListener('change', e => {
-      state.filters.settlementWeek = e.target.value;
+  if (periodSelect) {
+    periodSelect.addEventListener('change', e => {
+      state.filters.settlementPeriod = e.target.value;
       renderSettlementsPage();
     });
   }
@@ -737,7 +814,9 @@ function bindEvents() {
 }
 
 function subscribeAuth() {
-  db.auth.onAuthStateChange(async (_event, session) => {
+  if (authSubscription) return;
+
+  const sub = db.auth.onAuthStateChange(async (_event, session) => {
     state.session = session || null;
 
     if (!session) {
@@ -745,14 +824,10 @@ function subscribeAuth() {
       return;
     }
 
-    renderAppShell(true);
-
-    if (el.userEmail) {
-      el.userEmail.textContent = session.user?.email || '';
-    }
-
-    await loadAllData();
+    await loadSessionAndData();
   });
+
+  authSubscription = sub?.data?.subscription || null;
 }
 
 async function initApp() {
