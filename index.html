@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>OPTYMIST Fleet OS</title>
-  <link rel="stylesheet" href="/styles.css?v=20260424-1" />
+  <link rel="stylesheet" href="/styles.css?v=20260424-2" />
   <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
@@ -32,17 +32,20 @@
 
   <div id="appView" class="app hidden">
     <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-title">OPTYMIST</div>
-        <div class="brand-sub">Fleet OS</div>
-      </div>
+      <div>
+        <div class="brand">
+          <div class="brand-title">OPTYMIST</div>
+          <div class="brand-sub">Fleet OS</div>
+        </div>
 
-      <nav class="menu">
-        <button class="menu-btn active" data-page="dashboard">Dashboard</button>
-        <button class="menu-btn" data-page="drivers">Водії</button>
-        <button class="menu-btn" data-page="vehicles">Авто</button>
-        <button class="menu-btn" data-page="settlements">Розрахунки</button>
-      </nav>
+        <nav class="menu">
+          <button class="menu-btn active" data-page="dashboard">Dashboard</button>
+          <button class="menu-btn" data-page="drivers">Водії</button>
+          <button class="menu-btn" data-page="vehicles">Авто</button>
+          <button class="menu-btn" data-page="owners">Власники</button>
+          <button class="menu-btn" data-page="settlements">Розрахунки</button>
+        </nav>
+      </div>
 
       <div class="sidebar-footer">
         <div class="muted small">Settlement CRM MVP</div>
@@ -65,13 +68,31 @@
 
       <div id="appMsg"></div>
 
-      <section id="page-dashboard" class="page"></section>
-      <section id="page-drivers" class="page hidden"></section>
-      <section id="page-vehicles" class="page hidden"></section>
-      <section id="page-settlements" class="page hidden"></section>
+      <div class="content-grid">
+        <div class="content-main">
+          <section id="page-dashboard" class="page"></section>
+          <section id="page-drivers" class="page hidden"></section>
+          <section id="page-vehicles" class="page hidden"></section>
+          <section id="page-owners" class="page hidden"></section>
+          <section id="page-settlements" class="page hidden"></section>
+        </div>
+
+        <aside id="detailsPanel" class="details-panel hidden">
+          <div class="details-card">
+            <div class="details-header">
+              <div>
+                <div id="detailsKicker" class="muted small">Details</div>
+                <h3 id="detailsTitle">Вибери рядок</h3>
+              </div>
+              <button id="closeDetailsBtn" class="secondary" type="button">Закрити</button>
+            </div>
+            <div id="detailsBody"></div>
+          </div>
+        </aside>
+      </div>
     </main>
   </div>
 
-  <script defer src="/app.js?v=20260424-1"></script>
+  <script defer src="/app.js?v=20260424-2"></script>
 </body>
 </html>
