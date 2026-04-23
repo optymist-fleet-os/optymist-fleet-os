@@ -21,9 +21,13 @@ const state = {
   owners: [],
   periods: [],
   settlements: [],
+  documents: [],
+  assignments: [],
+  selectedDetails: null,
   filters: {
     driverSearch: '',
     vehicleSearch: '',
+    ownerSearch: '',
     settlementSearch: '',
     settlementPeriod: 'all',
     settlementStatus: 'all'
@@ -81,6 +85,10 @@ function mapById(list) {
   return m;
 }
 
+function shortId(id) {
+  return escapeHtml(String(id || '').slice(0, 8));
+}
+
 function fullName(driver) {
   if (!driver) return '-';
   return (
@@ -111,9 +119,9 @@ function vehicleLabel(vehicle) {
 
 function badgeClass(status) {
   const s = safe(status).toLowerCase();
-  if (['active', 'ready', 'approved', 'calculated', 'paid', 'sent'].includes(s)) return 'active';
+  if (['active', 'ready', 'approved', 'calculated', 'paid', 'sent', 'signed'].includes(s)) return 'active';
   if (['closed', 'archived', 'inactive'].includes(s)) return 'closed';
-  if (['open', 'draft', 'pending'].includes(s)) return 'ready';
+  if (['open', 'draft', 'pending', 'missing'].includes(s)) return 'ready';
   return '';
 }
 
@@ -129,6 +137,14 @@ function settlementPeriodLabel(settlement, periodsMap) {
 
 function isStaff() {
   return state.roles.includes('admin') || state.roles.includes('operator');
+}
+
+function getCurrentAssignmentForDriver(driverId) {
+  return state.assignments.find(a => String(a.driver_id) === String(driverId) && (!a.assigned_to || a.assigned_to >= new Date().toISOString().slice(0, 10))) || null;
+}
+
+function getCurrentAssignmentForVehicle(vehicleId) {
+  return state.assignments.find(a => String(a.vehicle_id) === String(vehicleId) && (!a.assigned_to || a.assigned_to >= new Date().toISOString().slice(0, 10))) || null;
 }
 
 function collectElements() {
@@ -148,7 +164,13 @@ function collectElements() {
   el.dashboardPage = qs('page-dashboard');
   el.driversPage = qs('page-drivers');
   el.vehiclesPage = qs('page-vehicles');
+  el.ownersPage = qs('page-owners');
   el.settlementsPage = qs('page-settlements');
+  el.detailsPanel = qs('detailsPanel');
+  el.detailsKicker = qs('detailsKicker');
+  el.detailsTitle = qs('detailsTitle');
+  el.detailsBody = qs('detailsBody');
+  el.closeDetailsBtn = qs('closeDetailsBtn');
 }
 
 function menuButtons() {
@@ -174,6 +196,7 @@ function setPage(page) {
     dashboard: el.dashboardPage,
     drivers: el.driversPage,
     vehicles: el.vehiclesPage,
+    owners: el.ownersPage,
     settlements: el.settlementsPage
   };
 
@@ -199,6 +222,10 @@ function setPage(page) {
     if (page === 'vehicles') {
       el.pageTitle.textContent = 'Авто';
       el.pageSubtitle.textContent = 'Список авто та власників';
+    }
+    if (page === 'owners') {
+      el.pageTitle.textContent = 'Власники';
+      el.pageSubtitle.textContent = 'Список власників авто';
     }
     if (page === 'settlements') {
       el.pageTitle.textContent = 'Розрахунки';
@@ -290,6 +317,7 @@ async function signOut() {
   state.session = null;
   state.profile = null;
   state.roles = [];
+  state.selectedDetails = null;
   renderAppShell(false);
   clearMsg(el.appMsg);
 }
@@ -338,10 +366,7 @@ async function loadSessionAndData() {
     renderAppShell(true);
 
     if (el.userEmail) {
-      el.userEmail.textContent =
-        state.profile?.email ||
-        session.user?.email ||
-        '';
+      el.userEmail.textContent = state.profile?.email || session.user?.email || '';
     }
 
     await loadAllData();
@@ -363,13 +388,17 @@ async function loadAllData() {
       vehiclesRes,
       ownersRes,
       periodsRes,
-      settlementsRes
+      settlementsRes,
+      documentsRes,
+      assignmentsRes
     ] = await Promise.all([
       db.from('drivers').select('*').order('created_at', { ascending: false }),
       db.from('vehicles').select('*').order('created_at', { ascending: false }),
       db.from('vehicle_owners').select('*').order('created_at', { ascending: false }),
       db.from('settlement_periods').select('*').order('date_from', { ascending: false }),
-      db.from('driver_settlements').select('*').order('created_at', { ascending: false })
+      db.from('driver_settlements').select('*').order('created_at', { ascending: false }),
+      db.from('documents').select('*').order('created_at', { ascending: false }),
+      db.from('driver_vehicle_assignments').select('*').order('assigned_from', { ascending: false })
     ]);
 
     const err =
@@ -377,7 +406,9 @@ async function loadAllData() {
       vehiclesRes.error ||
       ownersRes.error ||
       periodsRes.error ||
-      settlementsRes.error;
+      settlementsRes.error ||
+      documentsRes.error ||
+      assignmentsRes.error;
 
     if (err) {
       showMsg(el.appMsg, err.message || 'Помилка завантаження');
@@ -389,6 +420,8 @@ async function loadAllData() {
     state.owners = ownersRes.data || [];
     state.periods = periodsRes.data || [];
     state.settlements = settlementsRes.data || [];
+    state.documents = documentsRes.data || [];
+    state.assignments = assignmentsRes.data || [];
 
     renderAll();
   } catch (e) {
@@ -404,7 +437,9 @@ function renderAll() {
     renderDashboard();
     renderDriversPage();
     renderVehiclesPage();
+    renderOwnersPage();
     renderSettlementsPage();
+    renderDetailsPanel();
   } catch (e) {
     console.error('renderAll error:', e);
     showMsg(el.appMsg, e.message || 'Помилка рендеру сторінки');
@@ -418,15 +453,13 @@ function renderDashboard() {
   const vehiclesMap = mapById(state.vehicles);
 
   const payoutTotal = settlements.reduce((sum, r) => sum + num(r.payout_to_driver), 0);
-
   const debtTotal = settlements.reduce((sum, r) => {
     const balance = num(r.carry_forward_balance);
     return sum + (balance < 0 ? Math.abs(balance) : 0);
   }, 0);
-
   const grossIncomeTotal = settlements.reduce((sum, r) => sum + num(r.gross_platform_income), 0);
   const commissionTotal = settlements.reduce((sum, r) => sum + num(r.company_commission), 0);
-
+  const settlementDocsCount = state.documents.filter(d => safe(d.document_type) === 'settlement_pdf').length;
   const recent = settlements.slice(0, 8);
 
   if (!el.dashboardPage) return;
@@ -513,7 +546,7 @@ function renderDashboard() {
         <h3 class="card-title">Швидка перевірка</h3>
         <div class="row">
           <div>Документи settlement</div>
-          <div><strong>${settlements.filter(r => safe(r.pdf_url)).length}</strong></div>
+          <div><strong>${settlementDocsCount}</strong></div>
         </div>
         <div class="row">
           <div>Позитивний payout</div>
@@ -569,8 +602,8 @@ function renderDriversPage() {
             ${
               rows.length
                 ? rows.map(d => `
-                  <tr>
-                    <td>${escapeHtml(String(d.id).slice(0, 8))}</td>
+                  <tr class="table-row-clickable ${state.selectedDetails?.type === 'driver' && String(state.selectedDetails.id) === String(d.id) ? 'selected' : ''}" data-detail-type="driver" data-detail-id="${escapeHtml(d.id)}">
+                    <td>${shortId(d.id)}</td>
                     <td><strong>${escapeHtml(fullName(d))}</strong></td>
                     <td>${escapeHtml(safe(d.email) || '-')}</td>
                     <td>${escapeHtml(safe(d.phone) || '-')}</td>
@@ -594,6 +627,8 @@ function renderDriversPage() {
       renderDriversPage();
     });
   }
+
+  bindDetailRowClicks();
 }
 
 function renderVehiclesPage() {
@@ -638,8 +673,8 @@ function renderVehiclesPage() {
             ${
               rows.length
                 ? rows.map(v => `
-                  <tr>
-                    <td>${escapeHtml(String(v.id).slice(0, 8))}</td>
+                  <tr class="table-row-clickable ${state.selectedDetails?.type === 'vehicle' && String(state.selectedDetails.id) === String(v.id) ? 'selected' : ''}" data-detail-type="vehicle" data-detail-id="${escapeHtml(v.id)}">
+                    <td>${shortId(v.id)}</td>
                     <td><strong>${escapeHtml(safe(v.plate_number) || '-')}</strong></td>
                     <td>${escapeHtml([safe(v.brand), safe(v.model)].filter(Boolean).join(' ') || '-')}</td>
                     <td>${escapeHtml(safe(v.year) || '-')}</td>
@@ -664,6 +699,81 @@ function renderVehiclesPage() {
       renderVehiclesPage();
     });
   }
+
+  bindDetailRowClicks();
+}
+
+function renderOwnersPage() {
+  if (!el.ownersPage) return;
+
+  const q = safe(state.filters.ownerSearch).toLowerCase();
+
+  const rows = state.owners.filter(o => {
+    const blob = [
+      ownerLabel(o),
+      safe(o.email),
+      safe(o.phone),
+      safe(o.bank_account),
+      safe(o.owner_type)
+    ].join(' ').toLowerCase();
+
+    return !q || blob.includes(q);
+  });
+
+  const vehiclesByOwner = state.vehicles.reduce((acc, vehicle) => {
+    const key = String(vehicle.owner_id || '');
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  el.ownersPage.innerHTML = `
+    <div class="card">
+      <div class="filters" style="grid-template-columns:1fr;">
+        <input id="ownersSearch" placeholder="Пошук по назві, email, телефону..." value="${escapeHtml(safe(state.filters.ownerSearch))}" />
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Власник</th>
+              <th>Тип</th>
+              <th>Email</th>
+              <th>Телефон</th>
+              <th>Авто</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              rows.length
+                ? rows.map(o => `
+                  <tr class="table-row-clickable ${state.selectedDetails?.type === 'owner' && String(state.selectedDetails.id) === String(o.id) ? 'selected' : ''}" data-detail-type="owner" data-detail-id="${escapeHtml(o.id)}">
+                    <td>${shortId(o.id)}</td>
+                    <td><strong>${escapeHtml(ownerLabel(o))}</strong></td>
+                    <td>${escapeHtml(safe(o.owner_type) || '-')}</td>
+                    <td>${escapeHtml(safe(o.email) || '-')}</td>
+                    <td>${escapeHtml(safe(o.phone) || '-')}</td>
+                    <td>${vehiclesByOwner[String(o.id)] || 0}</td>
+                  </tr>
+                `).join('')
+                : `<tr><td colspan="6" class="empty">Немає даних</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  const search = document.getElementById('ownersSearch');
+  if (search) {
+    search.addEventListener('input', e => {
+      state.filters.ownerSearch = e.target.value;
+      renderOwnersPage();
+    });
+  }
+
+  bindDetailRowClicks();
 }
 
 function renderSettlementsPage() {
@@ -746,7 +856,7 @@ function renderSettlementsPage() {
             ${
               rows.length
                 ? rows.map(r => `
-                  <tr>
+                  <tr class="table-row-clickable ${state.selectedDetails?.type === 'settlement' && String(state.selectedDetails.id) === String(r.id) ? 'selected' : ''}" data-detail-type="settlement" data-detail-id="${escapeHtml(r.id)}">
                     <td><strong>${escapeHtml(settlementPeriodLabel(r, periodsMap))}</strong></td>
                     <td>
                       <strong>${escapeHtml(fullName(driversMap[String(r.driver_id)]))}</strong><br>
@@ -794,6 +904,202 @@ function renderSettlementsPage() {
       renderSettlementsPage();
     });
   }
+
+  bindDetailRowClicks();
+}
+
+function bindDetailRowClicks() {
+  document.querySelectorAll('[data-detail-type][data-detail-id]').forEach(node => {
+    node.addEventListener('click', () => {
+      state.selectedDetails = {
+        type: node.getAttribute('data-detail-type'),
+        id: node.getAttribute('data-detail-id')
+      };
+      renderAll();
+    });
+  });
+}
+
+function renderDetailsPanel() {
+  if (!el.detailsPanel || !el.detailsTitle || !el.detailsBody || !el.detailsKicker) return;
+
+  if (!state.selectedDetails) {
+    el.detailsPanel.classList.add('hidden');
+    return;
+  }
+
+  el.detailsPanel.classList.remove('hidden');
+
+  const driversMap = mapById(state.drivers);
+  const vehiclesMap = mapById(state.vehicles);
+  const ownersMap = mapById(state.owners);
+  const periodsMap = mapById(state.periods);
+
+  if (state.selectedDetails.type === 'driver') {
+    const driver = driversMap[String(state.selectedDetails.id)];
+    const assignment = getCurrentAssignmentForDriver(driver?.id);
+    const vehicle = assignment ? vehiclesMap[String(assignment.vehicle_id)] : null;
+    const settlements = state.settlements.filter(s => String(s.driver_id) === String(driver?.id));
+    const totalPayout = settlements.reduce((sum, s) => sum + num(s.payout_to_driver), 0);
+
+    el.detailsKicker.textContent = 'Driver details';
+    el.detailsTitle.textContent = fullName(driver);
+    el.detailsBody.innerHTML = `
+      <div class="details-section">
+        <h4>Основне</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Email</div><div class="details-value">${escapeHtml(safe(driver?.email) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Телефон</div><div class="details-value">${escapeHtml(safe(driver?.phone) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(driver?.status) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Контракт</div><div class="details-value">${escapeHtml(safe(driver?.contract_status) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Онбординг</div><div class="details-value">${escapeHtml(safe(driver?.onboarding_stage) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Паспорт</div><div class="details-value">${escapeHtml(safe(driver?.passport_number) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Права</div><div class="details-value">${escapeHtml(safe(driver?.driver_license_number) || '-')}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Поточне авто</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Авто</div><div class="details-value">${escapeHtml(vehicleLabel(vehicle))}</div></div>
+          <div class="details-item"><div class="details-label">Оренда</div><div class="details-value">${assignment ? money(assignment.driver_weekly_rent) : '-'}</div></div>
+          <div class="details-item"><div class="details-label">Призначено</div><div class="details-value">${escapeHtml(safe(assignment?.assigned_from) || '-')}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Фінанси</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Розрахунків</div><div class="details-value">${settlements.length}</div></div>
+          <div class="details-item"><div class="details-label">Разом payout</div><div class="details-value">${money(totalPayout)}</div></div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if (state.selectedDetails.type === 'vehicle') {
+    const vehicle = vehiclesMap[String(state.selectedDetails.id)];
+    const owner = ownersMap[String(vehicle?.owner_id)];
+    const assignment = getCurrentAssignmentForVehicle(vehicle?.id);
+    const driver = assignment ? driversMap[String(assignment.driver_id)] : null;
+
+    el.detailsKicker.textContent = 'Vehicle details';
+    el.detailsTitle.textContent = safe(vehicle?.plate_number) || 'Авто';
+    el.detailsBody.innerHTML = `
+      <div class="details-section">
+        <h4>Основне</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Марка</div><div class="details-value">${escapeHtml(safe(vehicle?.brand) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Модель</div><div class="details-value">${escapeHtml(safe(vehicle?.model) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Рік</div><div class="details-value">${escapeHtml(safe(vehicle?.year) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">VIN</div><div class="details-value">${escapeHtml(safe(vehicle?.vin) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(vehicle?.status) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Пальне</div><div class="details-value">${escapeHtml(safe(vehicle?.fuel_type) || '-')}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Документи</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Страховка</div><div class="details-value">${escapeHtml(safe(vehicle?.insurance_expiry) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Огляд</div><div class="details-value">${escapeHtml(safe(vehicle?.inspection_expiry) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Поліс</div><div class="details-value">${escapeHtml(safe(vehicle?.policy_number) || '-')}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Зв’язки</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Власник</div><div class="details-value">${escapeHtml(ownerLabel(owner))}</div></div>
+          <div class="details-item"><div class="details-label">Поточний водій</div><div class="details-value">${escapeHtml(fullName(driver))}</div></div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if (state.selectedDetails.type === 'owner') {
+    const owner = ownersMap[String(state.selectedDetails.id)];
+    const vehicles = state.vehicles.filter(v => String(v.owner_id) === String(owner?.id));
+
+    el.detailsKicker.textContent = 'Owner details';
+    el.detailsTitle.textContent = ownerLabel(owner);
+    el.detailsBody.innerHTML = `
+      <div class="details-section">
+        <h4>Основне</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Тип</div><div class="details-value">${escapeHtml(safe(owner?.owner_type) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Email</div><div class="details-value">${escapeHtml(safe(owner?.email) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Телефон</div><div class="details-value">${escapeHtml(safe(owner?.phone) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Рахунок</div><div class="details-value">${escapeHtml(safe(owner?.bank_account) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Умови</div><div class="details-value">${escapeHtml(safe(owner?.settlement_terms) || '-')}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Авто власника</h4>
+        <div class="details-list">
+          ${
+            vehicles.length
+              ? vehicles.map(v => `
+                <div class="details-item">
+                  <div class="details-label">${escapeHtml(safe(v.plate_number) || '-')}</div>
+                  <div class="details-value">${escapeHtml([safe(v.brand), safe(v.model), safe(v.year)].filter(Boolean).join(' ') || '-')}</div>
+                </div>
+              `).join('')
+              : `<div class="empty">Немає авто</div>`
+          }
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if (state.selectedDetails.type === 'settlement') {
+    const settlement = state.settlements.find(s => String(s.id) === String(state.selectedDetails.id));
+    const driver = driversMap[String(settlement?.driver_id)];
+    const vehicle = vehiclesMap[String(settlement?.vehicle_id)];
+    const period = periodsMap[String(settlement?.period_id)];
+    const doc = state.documents.find(d => String(d.entity_id) === String(settlement?.id) && safe(d.document_type) === 'settlement_pdf');
+
+    el.detailsKicker.textContent = 'Settlement details';
+    el.detailsTitle.textContent = settlementPeriodLabel(settlement, periodsMap);
+    el.detailsBody.innerHTML = `
+      <div class="details-section">
+        <h4>Контекст</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Водій</div><div class="details-value">${escapeHtml(fullName(driver))}</div></div>
+          <div class="details-item"><div class="details-label">Авто</div><div class="details-value">${escapeHtml(vehicleLabel(vehicle))}</div></div>
+          <div class="details-item"><div class="details-label">Період</div><div class="details-value">${escapeHtml(periodLabel(period))}</div></div>
+          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(settlement?.status) || '-')}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Фінанси</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Gross</div><div class="details-value">${money(settlement?.gross_platform_income)}</div></div>
+          <div class="details-item"><div class="details-label">Net</div><div class="details-value">${money(settlement?.platform_net_income)}</div></div>
+          <div class="details-item"><div class="details-label">Bonus</div><div class="details-value">${money(settlement?.bonuses)}</div></div>
+          <div class="details-item"><div class="details-label">Cash</div><div class="details-value">${money(settlement?.cash_collected)}</div></div>
+          <div class="details-item"><div class="details-label">Комісія</div><div class="details-value">${money(settlement?.company_commission)}</div></div>
+          <div class="details-item"><div class="details-label">Fee</div><div class="details-value">${money(settlement?.weekly_settlement_fee)}</div></div>
+          <div class="details-item"><div class="details-label">Оренда</div><div class="details-value">${money(settlement?.rent_total)}</div></div>
+          <div class="details-item"><div class="details-label">Пальне</div><div class="details-value">${money(settlement?.fuel_total)}</div></div>
+          <div class="details-item"><div class="details-label">Payout</div><div class="details-value">${money(settlement?.payout_to_driver)}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Документ</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Settlement PDF</div><div class="details-value">${doc ? 'є в documents' : 'немає'}</div></div>
+          <div class="details-item"><div class="details-label">URL</div><div class="details-value">${escapeHtml(safe(doc?.file_url) || safe(settlement?.pdf_url) || '-')}</div></div>
+        </div>
+      </div>
+    `;
+  }
 }
 
 function bindEvents() {
@@ -801,6 +1107,12 @@ function bindEvents() {
   if (el.signUpBtn) el.signUpBtn.addEventListener('click', signUp);
   if (el.logoutBtn) el.logoutBtn.addEventListener('click', signOut);
   if (el.refreshBtn) el.refreshBtn.addEventListener('click', loadAllData);
+  if (el.closeDetailsBtn) {
+    el.closeDetailsBtn.addEventListener('click', () => {
+      state.selectedDetails = null;
+      renderAll();
+    });
+  }
 
   menuButtons().forEach(btn => {
     btn.addEventListener('click', () => setPage(btn.dataset.page));
