@@ -44,6 +44,9 @@ const el = {};
 let authSubscription = null;
 let isLoadingData = false;
 
+const AUTH_STORAGE_KEY = 'sb-tegravrxaqcuktwjanzm-auth-token';
+let authHydrating = false;
+
 function safe(v) {
   return v == null ? '' : String(v).trim();
 }
