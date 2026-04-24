@@ -587,17 +587,27 @@ async function signIn() {
 
 async function signOut() {
   try {
-    await db.auth.signOut();
+    await db.auth.signOut({ scope: 'local' });
   } catch (e) {
     console.error('signOut error:', e);
   }
+
+  try {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+  } catch (_) {}
+
+  try {
+    sessionStorage.removeItem(AUTH_STORAGE_KEY);
+  } catch (_) {}
 
   state.session = null;
   state.profile = null;
   state.roles = [];
   state.selectedDetails = null;
+
   renderAppShell(false);
   clearMsg(el.appMsg);
+  clearMsg(el.msg);
 }
 
 async function loadProfileAndRoles(userId) {
