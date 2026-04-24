@@ -82,6 +82,68 @@ function clearMsg(target) {
   target.innerHTML = '';
 }
 
+function isAuthStorageBroken() {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return !parsed || typeof parsed !== 'object';
+  } catch {
+    return true;
+  }
+}
+
+async function resetBrokenSession(reason = '') {
+  try {
+    await db.auth.signOut({ scope: 'local' });
+  } catch (_) {}
+
+  try {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+  } catch (_) {}
+
+  try {
+    sessionStorage.removeItem(AUTH_STORAGE_KEY);
+  } catch (_) {}
+
+  state.session = null;
+  state.profile = null;
+  state.roles = [];
+  state.selectedDetails = null;
+
+  renderAppShell(false);
+
+  if (reason) {
+    showMsg(el.msg, `Сесію очищено. Увійди ще раз. ${reason}`, 'error');
+  }
+}
+
+async function applySession(session) {
+  state.session = session || null;
+
+  if (!session) {
+    state.profile = null;
+    state.roles = [];
+    renderAppShell(false);
+    return;
+  }
+
+  await loadProfileAndRoles(session.user.id);
+
+  if (!isStaff()) {
+    await resetBrokenSession('У цього акаунта немає ролі admin/operator');
+    return;
+  }
+
+  renderAppShell(true);
+
+  if (el.userEmail) {
+    el.userEmail.textContent = state.profile?.email || session.user?.email || '';
+  }
+
+  await loadAllData();
+}
+
 function qs(id) {
   return document.getElementById(id);
 }
