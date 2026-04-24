@@ -569,15 +569,15 @@ async function signIn() {
   setAuthButtonsDisabled(true);
 
   try {
-    const { error } = await db.auth.signInWithPassword({ email, password });
+    const { data, error } = await db.auth.signInWithPassword({ email, password });
 
     if (error) {
       showMsg(el.msg, error.message);
       return;
     }
 
-    showMsg(el.msg, 'Успішний вхід', 'success');
-    await loadSessionAndData();
+    clearMsg(el.msg);
+    await applySession(data?.session || null);
   } catch (e) {
     showMsg(el.msg, e.message || 'Помилка входу');
   } finally {
