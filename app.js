@@ -627,37 +627,31 @@ async function loadSessionAndData() {
   clearMsg(el.appMsg);
 
   try {
+    if (isAuthStorageBroken()) {
+      await resetBrokenSession('Пошкоджений local auth cache.');
+      return;
+    }
+
     const { data, error } = await db.auth.getSession();
 
     if (error) {
-      showMsg(el.msg, error.message);
+      const msg = safe(error.message).toLowerCase();
+
+      if (
+        msg.includes('refresh token') ||
+        msg.includes('invalid jwt') ||
+        msg.includes('jwt') ||
+        msg.includes('session')
+      ) {
+        await resetBrokenSession(error.message);
+        return;
+      }
+
+      showMsg(el.msg, error.message || 'Помилка сесії');
       return;
     }
 
-    const session = data?.session || null;
-    state.session = session;
-
-    if (!session) {
-      renderAppShell(false);
-      return;
-    }
-
-    await loadProfileAndRoles(session.user.id);
-
-    if (!isStaff()) {
-      await db.auth.signOut();
-      renderAppShell(false);
-      showMsg(el.msg, 'У цього акаунта немає ролі admin/operator');
-      return;
-    }
-
-    renderAppShell(true);
-
-    if (el.userEmail) {
-      el.userEmail.textContent = state.profile?.email || session.user?.email || '';
-    }
-
-    await loadAllData();
+    await applySession(data?.session || null);
   } catch (e) {
     console.error(e);
     showMsg(el.appMsg || el.msg, e.message || 'Помилка завантаження сесії');
@@ -1747,15 +1741,32 @@ function bindEvents() {
 function subscribeAuth() {
   if (authSubscription) return;
 
-  const sub = db.auth.onAuthStateChange(async (_event, session) => {
-    state.session = session || null;
+  const sub = db.auth.onAuthStateChange(async (event, session) => {
+    if (authHydrating) return;
 
-    if (!session) {
+    if (event === 'SIGNED_OUT') {
+      state.session = null;
+      state.profile = null;
+      state.roles = [];
+      state.selectedDetails = null;
       renderAppShell(false);
       return;
     }
 
-    await loadSessionAndData();
+    if (
+      event === 'INITIAL_SESSION' ||
+      event === 'SIGNED_IN' ||
+      event === 'TOKEN_REFRESHED'
+    ) {
+      authHydrating = true;
+      try {
+        await applySession(session || null);
+      } catch (e) {
+        console.error('auth state error:', e);
+      } finally {
+        authHydrating = false;
+      }
+    }
   });
 
   authSubscription = sub?.data?.subscription || null;
