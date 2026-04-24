@@ -31,6 +31,12 @@ const state = {
     settlementSearch: '',
     settlementPeriod: 'all',
     settlementStatus: 'all'
+  },
+  forms: {
+    driver: false,
+    vehicle: false,
+    owner: false,
+    period: false
   }
 };
 
@@ -140,11 +146,222 @@ function isStaff() {
 }
 
 function getCurrentAssignmentForDriver(driverId) {
-  return state.assignments.find(a => String(a.driver_id) === String(driverId) && (!a.assigned_to || a.assigned_to >= new Date().toISOString().slice(0, 10))) || null;
+  return state.assignments.find(
+    a =>
+      String(a.driver_id) === String(driverId) &&
+      (!a.assigned_to || a.assigned_to >= new Date().toISOString().slice(0, 10))
+  ) || null;
 }
 
 function getCurrentAssignmentForVehicle(vehicleId) {
-  return state.assignments.find(a => String(a.vehicle_id) === String(vehicleId) && (!a.assigned_to || a.assigned_to >= new Date().toISOString().slice(0, 10))) || null;
+  return state.assignments.find(
+    a =>
+      String(a.vehicle_id) === String(vehicleId) &&
+      (!a.assigned_to || a.assigned_to >= new Date().toISOString().slice(0, 10))
+  ) || null;
+}
+
+function nullIfBlank(v) {
+  const s = safe(v);
+  return s ? s : null;
+}
+
+function splitName(full) {
+  const clean = safe(full);
+  const parts = clean.split(/\s+/).filter(Boolean);
+  return {
+    first_name: parts[0] || null,
+    last_name: parts.slice(1).join(' ') || null
+  };
+}
+
+function closeAllForms() {
+  state.forms = {
+    driver: false,
+    vehicle: false,
+    owner: false,
+    period: false
+  };
+}
+
+function toggleForm(formKey) {
+  const next = !state.forms[formKey];
+  closeAllForms();
+  state.forms[formKey] = next;
+  renderAll();
+}
+
+async function createDriver(payload) {
+  const { error } = await db.from('drivers').insert([payload]);
+  if (error) throw error;
+}
+
+async function createOwner(payload) {
+  const { error } = await db.from('vehicle_owners').insert([payload]);
+  if (error) throw error;
+}
+
+async function createVehicle(payload) {
+  const { error } = await db.from('vehicles').insert([payload]);
+  if (error) throw error;
+}
+
+async function createPeriod(payload) {
+  const { error } = await db.from('settlement_periods').insert([payload]);
+  if (error) throw error;
+}
+
+async function onCreateDriverSubmit(event) {
+  event.preventDefault();
+  clearMsg(el.appMsg);
+
+  const fd = new FormData(event.target);
+  const full_name = safe(fd.get('full_name'));
+
+  if (!full_name) {
+    showMsg(el.appMsg, 'Для водія потрібне ім’я');
+    return;
+  }
+
+  const names = splitName(full_name);
+
+  const payload = {
+    full_name,
+    first_name: names.first_name,
+    last_name: names.last_name,
+    email: nullIfBlank(fd.get('email')),
+    phone: nullIfBlank(fd.get('phone')),
+    passport_number: nullIfBlank(fd.get('passport_number')),
+    driver_license_number: nullIfBlank(fd.get('driver_license_number')),
+    status: safe(fd.get('status')) || 'active',
+    contract_status: safe(fd.get('contract_status')) || 'missing',
+    onboarding_stage: safe(fd.get('onboarding_stage')) || 'new',
+    joined_at: nullIfBlank(fd.get('joined_at')),
+    notes: nullIfBlank(fd.get('notes'))
+  };
+
+  try {
+    await createDriver(payload);
+    showMsg(el.appMsg, 'Водія створено', 'success');
+    closeAllForms();
+    await loadAllData();
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Не вдалося створити водія');
+  }
+}
+
+async function onCreateOwnerSubmit(event) {
+  event.preventDefault();
+  clearMsg(el.appMsg);
+
+  const fd = new FormData(event.target);
+  const owner_type = safe(fd.get('owner_type')) || 'company';
+  const company_name = nullIfBlank(fd.get('company_name'));
+  const full_name = nullIfBlank(fd.get('full_name'));
+
+  if (owner_type === 'company' && !company_name) {
+    showMsg(el.appMsg, 'Для company потрібно заповнити company name');
+    return;
+  }
+
+  if (owner_type === 'person' && !full_name) {
+    showMsg(el.appMsg, 'Для person потрібно заповнити full name');
+    return;
+  }
+
+  const payload = {
+    owner_type,
+    company_name,
+    full_name,
+    email: nullIfBlank(fd.get('email')),
+    phone: nullIfBlank(fd.get('phone')),
+    bank_account: nullIfBlank(fd.get('bank_account')),
+    settlement_terms: nullIfBlank(fd.get('settlement_terms')),
+    notes: nullIfBlank(fd.get('notes'))
+  };
+
+  try {
+    await createOwner(payload);
+    showMsg(el.appMsg, 'Власника створено', 'success');
+    closeAllForms();
+    await loadAllData();
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Не вдалося створити власника');
+  }
+}
+
+async function onCreateVehicleSubmit(event) {
+  event.preventDefault();
+  clearMsg(el.appMsg);
+
+  const fd = new FormData(event.target);
+  const owner_id = safe(fd.get('owner_id'));
+  const plate_number = safe(fd.get('plate_number'));
+
+  if (!owner_id) {
+    showMsg(el.appMsg, 'Для авто потрібно вибрати власника');
+    return;
+  }
+
+  if (!plate_number) {
+    showMsg(el.appMsg, 'Для авто потрібен номер');
+    return;
+  }
+
+  const payload = {
+    owner_id,
+    plate_number,
+    vin: nullIfBlank(fd.get('vin')),
+    brand: nullIfBlank(fd.get('brand')),
+    model: nullIfBlank(fd.get('model')),
+    year: nullIfBlank(fd.get('year')) ? Number(fd.get('year')) : null,
+    fuel_type: safe(fd.get('fuel_type')) || 'hybrid',
+    ownership_type: safe(fd.get('ownership_type')) || 'owner_external',
+    insurance_expiry: nullIfBlank(fd.get('insurance_expiry')),
+    inspection_expiry: nullIfBlank(fd.get('inspection_expiry')),
+    status: safe(fd.get('status')) || 'active',
+    notes: nullIfBlank(fd.get('notes'))
+  };
+
+  try {
+    await createVehicle(payload);
+    showMsg(el.appMsg, 'Авто створено', 'success');
+    closeAllForms();
+    await loadAllData();
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Не вдалося створити авто');
+  }
+}
+
+async function onCreatePeriodSubmit(event) {
+  event.preventDefault();
+  clearMsg(el.appMsg);
+
+  const fd = new FormData(event.target);
+  const date_from = safe(fd.get('date_from'));
+  const date_to = safe(fd.get('date_to'));
+
+  if (!date_from || !date_to) {
+    showMsg(el.appMsg, 'Для періоду потрібні date_from і date_to');
+    return;
+  }
+
+  const payload = {
+    period_type: safe(fd.get('period_type')) || 'weekly',
+    date_from,
+    date_to,
+    status: safe(fd.get('status')) || 'draft',
+    notes: nullIfBlank(fd.get('notes'))
+  };
+
+  try {
+    await createPeriod(payload);
+    showMsg(el.appMsg, 'Період створено', 'success');
+    closeAllForms();
+    await loadAllData();
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Не вдалося створити період');
+  }
 }
 
 function collectElements() {
@@ -264,11 +481,7 @@ async function signUp() {
       showMsg(el.msg, 'Реєстрація пройшла успішно', 'success');
       await loadSessionAndData();
     } else {
-      showMsg(
-        el.msg,
-        'Акаунт створено. Якщо потрібне підтвердження email — підтвердь пошту і увійди.',
-        'success'
-      );
+      showMsg(el.msg, 'Акаунт створено. Якщо потрібне підтвердження email — підтвердь пошту і увійди.', 'success');
     }
   } catch (e) {
     showMsg(el.msg, e.message || 'Помилка реєстрації');
@@ -581,6 +794,87 @@ function renderDriversPage() {
 
   el.driversPage.innerHTML = `
     <div class="card">
+      <div class="action-bar">
+        <div class="muted">Список водіїв</div>
+        <button id="toggleDriverFormBtn" type="button">${state.forms.driver ? 'Сховати форму' : 'Додати водія'}</button>
+      </div>
+
+      ${
+        state.forms.driver ? `
+          <div class="form-card">
+            <h3 class="form-title">Новий водій</h3>
+            <form id="driverCreateForm">
+              <div class="form-grid">
+                <div class="form-field">
+                  <label>ПІБ *</label>
+                  <input name="full_name" required />
+                </div>
+                <div class="form-field">
+                  <label>Email</label>
+                  <input name="email" type="email" />
+                </div>
+                <div class="form-field">
+                  <label>Телефон</label>
+                  <input name="phone" />
+                </div>
+                <div class="form-field">
+                  <label>Паспорт</label>
+                  <input name="passport_number" />
+                </div>
+                <div class="form-field">
+                  <label>Номер прав</label>
+                  <input name="driver_license_number" />
+                </div>
+                <div class="form-field">
+                  <label>Дата старту</label>
+                  <input name="joined_at" type="date" />
+                </div>
+                <div class="form-field">
+                  <label>Статус</label>
+                  <select name="status">
+                    <option value="active">active</option>
+                    <option value="pending">pending</option>
+                    <option value="blocked">blocked</option>
+                    <option value="inactive">inactive</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label>Контракт</label>
+                  <select name="contract_status">
+                    <option value="missing">missing</option>
+                    <option value="draft">draft</option>
+                    <option value="signed">signed</option>
+                    <option value="expired">expired</option>
+                    <option value="terminated">terminated</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label>Онбординг</label>
+                  <select name="onboarding_stage">
+                    <option value="new">new</option>
+                    <option value="documents">documents</option>
+                    <option value="platform_setup">platform_setup</option>
+                    <option value="vehicle_assigned">vehicle_assigned</option>
+                    <option value="ready">ready</option>
+                    <option value="inactive">inactive</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-field" style="margin-top:12px;">
+                <label>Нотатки</label>
+                <input name="notes" />
+              </div>
+
+              <div class="form-actions">
+                <button type="submit">Створити</button>
+                <button type="button" class="secondary" id="cancelDriverFormBtn">Скасувати</button>
+              </div>
+            </form>
+          </div>
+        ` : ''
+      }
+
       <div class="filters" style="grid-template-columns:1fr;">
         <input id="driversSearch" placeholder="Пошук по імені, email, телефону..." value="${escapeHtml(safe(state.filters.driverSearch))}" />
       </div>
@@ -620,7 +914,11 @@ function renderDriversPage() {
     </div>
   `;
 
-  const search = document.getElementById('driversSearch');
+  qs('toggleDriverFormBtn')?.addEventListener('click', () => toggleForm('driver'));
+  qs('cancelDriverFormBtn')?.addEventListener('click', () => toggleForm('driver'));
+  qs('driverCreateForm')?.addEventListener('submit', onCreateDriverSubmit);
+
+  const search = qs('driversSearch');
   if (search) {
     search.addEventListener('input', e => {
       state.filters.driverSearch = e.target.value;
@@ -651,6 +949,103 @@ function renderVehiclesPage() {
 
   el.vehiclesPage.innerHTML = `
     <div class="card">
+      <div class="action-bar">
+        <div class="muted">Список авто та власників</div>
+        <button id="toggleVehicleFormBtn" type="button">${state.forms.vehicle ? 'Сховати форму' : 'Додати авто'}</button>
+      </div>
+
+      ${
+        state.forms.vehicle ? `
+          <div class="form-card">
+            <h3 class="form-title">Нове авто</h3>
+            <form id="vehicleCreateForm">
+              <div class="form-grid">
+                <div class="form-field">
+                  <label>Власник *</label>
+                  <select name="owner_id" required>
+                    <option value="">Вибери власника</option>
+                    ${state.owners.map(o => `
+                      <option value="${escapeHtml(o.id)}">${escapeHtml(ownerLabel(o))}</option>
+                    `).join('')}
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label>Номер *</label>
+                  <input name="plate_number" required />
+                </div>
+                <div class="form-field">
+                  <label>VIN</label>
+                  <input name="vin" />
+                </div>
+                <div class="form-field">
+                  <label>Марка</label>
+                  <input name="brand" />
+                </div>
+                <div class="form-field">
+                  <label>Модель</label>
+                  <input name="model" />
+                </div>
+                <div class="form-field">
+                  <label>Рік</label>
+                  <input name="year" type="number" />
+                </div>
+                <div class="form-field">
+                  <label>Пальне</label>
+                  <select name="fuel_type">
+                    <option value="hybrid">hybrid</option>
+                    <option value="petrol">petrol</option>
+                    <option value="diesel">diesel</option>
+                    <option value="ev">ev</option>
+                    <option value="lpg">lpg</option>
+                    <option value="other">other</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label>Ownership type</label>
+                  <select name="ownership_type">
+                    <option value="owner_external">owner_external</option>
+                    <option value="company">company</option>
+                    <option value="leased">leased</option>
+                    <option value="rented">rented</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label>Статус</label>
+                  <select name="status">
+                    <option value="active">active</option>
+                    <option value="service">service</option>
+                    <option value="repair">repair</option>
+                    <option value="suspended">suspended</option>
+                    <option value="archived">archived</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-grid-2" style="margin-top:12px;">
+                <div class="form-field">
+                  <label>Страховка до</label>
+                  <input name="insurance_expiry" type="date" />
+                </div>
+                <div class="form-field">
+                  <label>Огляд до</label>
+                  <input name="inspection_expiry" type="date" />
+                </div>
+              </div>
+
+              <div class="form-field" style="margin-top:12px;">
+                <label>Нотатки</label>
+                <input name="notes" />
+              </div>
+
+              <div class="form-actions">
+                <button type="submit">Створити</button>
+                <button type="button" class="secondary" id="cancelVehicleFormBtn">Скасувати</button>
+              </div>
+            </form>
+          </div>
+        ` : ''
+      }
+
       <div class="filters" style="grid-template-columns:1fr;">
         <input id="vehiclesSearch" placeholder="Пошук по номеру, марці, моделі..." value="${escapeHtml(safe(state.filters.vehicleSearch))}" />
       </div>
@@ -692,7 +1087,11 @@ function renderVehiclesPage() {
     </div>
   `;
 
-  const search = document.getElementById('vehiclesSearch');
+  qs('toggleVehicleFormBtn')?.addEventListener('click', () => toggleForm('vehicle'));
+  qs('cancelVehicleFormBtn')?.addEventListener('click', () => toggleForm('vehicle'));
+  qs('vehicleCreateForm')?.addEventListener('submit', onCreateVehicleSubmit);
+
+  const search = qs('vehiclesSearch');
   if (search) {
     search.addEventListener('input', e => {
       state.filters.vehicleSearch = e.target.value;
@@ -728,6 +1127,68 @@ function renderOwnersPage() {
 
   el.ownersPage.innerHTML = `
     <div class="card">
+      <div class="action-bar">
+        <div class="muted">Список власників авто</div>
+        <button id="toggleOwnerFormBtn" type="button">${state.forms.owner ? 'Сховати форму' : 'Додати власника'}</button>
+      </div>
+
+      ${
+        state.forms.owner ? `
+          <div class="form-card">
+            <h3 class="form-title">Новий власник</h3>
+            <form id="ownerCreateForm">
+              <div class="form-grid">
+                <div class="form-field">
+                  <label>Тип</label>
+                  <select name="owner_type">
+                    <option value="company">company</option>
+                    <option value="person">person</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label>Company name</label>
+                  <input name="company_name" />
+                </div>
+                <div class="form-field">
+                  <label>Full name</label>
+                  <input name="full_name" />
+                </div>
+                <div class="form-field">
+                  <label>Email</label>
+                  <input name="email" type="email" />
+                </div>
+                <div class="form-field">
+                  <label>Телефон</label>
+                  <input name="phone" />
+                </div>
+                <div class="form-field">
+                  <label>Рахунок</label>
+                  <input name="bank_account" />
+                </div>
+              </div>
+
+              <div class="form-grid-2" style="margin-top:12px;">
+                <div class="form-field">
+                  <label>Умови виплат</label>
+                  <input name="settlement_terms" />
+                </div>
+                <div class="form-field">
+                  <label>Нотатки</label>
+                  <input name="notes" />
+                </div>
+              </div>
+
+              <div class="helper-text">Для company заповни company name. Для person заповни full name.</div>
+
+              <div class="form-actions">
+                <button type="submit">Створити</button>
+                <button type="button" class="secondary" id="cancelOwnerFormBtn">Скасувати</button>
+              </div>
+            </form>
+          </div>
+        ` : ''
+      }
+
       <div class="filters" style="grid-template-columns:1fr;">
         <input id="ownersSearch" placeholder="Пошук по назві, email, телефону..." value="${escapeHtml(safe(state.filters.ownerSearch))}" />
       </div>
@@ -765,7 +1226,11 @@ function renderOwnersPage() {
     </div>
   `;
 
-  const search = document.getElementById('ownersSearch');
+  qs('toggleOwnerFormBtn')?.addEventListener('click', () => toggleForm('owner'));
+  qs('cancelOwnerFormBtn')?.addEventListener('click', () => toggleForm('owner'));
+  qs('ownerCreateForm')?.addEventListener('submit', onCreateOwnerSubmit);
+
+  const search = qs('ownersSearch');
   if (search) {
     search.addEventListener('input', e => {
       state.filters.ownerSearch = e.target.value;
@@ -814,6 +1279,58 @@ function renderSettlementsPage() {
 
   el.settlementsPage.innerHTML = `
     <div class="card">
+      <div class="action-bar">
+        <div class="muted">Driver settlements по періодах</div>
+        <button id="togglePeriodFormBtn" type="button">${state.forms.period ? 'Сховати форму' : 'Додати період'}</button>
+      </div>
+
+      ${
+        state.forms.period ? `
+          <div class="form-card">
+            <h3 class="form-title">Новий період</h3>
+            <form id="periodCreateForm">
+              <div class="form-grid">
+                <div class="form-field">
+                  <label>Тип</label>
+                  <select name="period_type">
+                    <option value="weekly">weekly</option>
+                    <option value="monthly">monthly</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label>Date from *</label>
+                  <input name="date_from" type="date" required />
+                </div>
+                <div class="form-field">
+                  <label>Date to *</label>
+                  <input name="date_to" type="date" required />
+                </div>
+                <div class="form-field">
+                  <label>Статус</label>
+                  <select name="status">
+                    <option value="draft">draft</option>
+                    <option value="imported">imported</option>
+                    <option value="calculated">calculated</option>
+                    <option value="approved">approved</option>
+                    <option value="closed">closed</option>
+                    <option value="sent">sent</option>
+                  </select>
+                </div>
+                <div class="form-field" style="grid-column: span 2;">
+                  <label>Нотатки</label>
+                  <input name="notes" />
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit">Створити</button>
+                <button type="button" class="secondary" id="cancelPeriodFormBtn">Скасувати</button>
+              </div>
+            </form>
+          </div>
+        ` : ''
+      }
+
       <div class="filters">
         <input id="settlementsSearch" placeholder="Пошук по водію, email, авто..." value="${escapeHtml(safe(state.filters.settlementSearch))}" />
 
@@ -880,9 +1397,13 @@ function renderSettlementsPage() {
     </div>
   `;
 
-  const search = document.getElementById('settlementsSearch');
-  const periodSelect = document.getElementById('settlementsPeriod');
-  const statusSelect = document.getElementById('settlementsStatus');
+  qs('togglePeriodFormBtn')?.addEventListener('click', () => toggleForm('period'));
+  qs('cancelPeriodFormBtn')?.addEventListener('click', () => toggleForm('period'));
+  qs('periodCreateForm')?.addEventListener('submit', onCreatePeriodSubmit);
+
+  const search = qs('settlementsSearch');
+  const periodSelect = qs('settlementsPeriod');
+  const statusSelect = qs('settlementsStatus');
 
   if (search) {
     search.addEventListener('input', e => {
@@ -908,18 +1429,6 @@ function renderSettlementsPage() {
   bindDetailRowClicks();
 }
 
-function bindDetailRowClicks() {
-  document.querySelectorAll('[data-detail-type][data-detail-id]').forEach(node => {
-    node.addEventListener('click', () => {
-      state.selectedDetails = {
-        type: node.getAttribute('data-detail-type'),
-        id: node.getAttribute('data-detail-id')
-      };
-      renderAll();
-    });
-  });
-}
-
 function renderDetailsPanel() {
   if (!el.detailsPanel || !el.detailsTitle || !el.detailsBody || !el.detailsKicker) return;
 
@@ -937,9 +1446,14 @@ function renderDetailsPanel() {
 
   if (state.selectedDetails.type === 'driver') {
     const driver = driversMap[String(state.selectedDetails.id)];
-    const assignment = getCurrentAssignmentForDriver(driver?.id);
+    if (!driver) {
+      el.detailsPanel.classList.add('hidden');
+      return;
+    }
+
+    const assignment = getCurrentAssignmentForDriver(driver.id);
     const vehicle = assignment ? vehiclesMap[String(assignment.vehicle_id)] : null;
-    const settlements = state.settlements.filter(s => String(s.driver_id) === String(driver?.id));
+    const settlements = state.settlements.filter(s => String(s.driver_id) === String(driver.id));
     const totalPayout = settlements.reduce((sum, s) => sum + num(s.payout_to_driver), 0);
 
     el.detailsKicker.textContent = 'Driver details';
@@ -948,13 +1462,13 @@ function renderDetailsPanel() {
       <div class="details-section">
         <h4>Основне</h4>
         <div class="details-list">
-          <div class="details-item"><div class="details-label">Email</div><div class="details-value">${escapeHtml(safe(driver?.email) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Телефон</div><div class="details-value">${escapeHtml(safe(driver?.phone) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(driver?.status) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Контракт</div><div class="details-value">${escapeHtml(safe(driver?.contract_status) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Онбординг</div><div class="details-value">${escapeHtml(safe(driver?.onboarding_stage) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Паспорт</div><div class="details-value">${escapeHtml(safe(driver?.passport_number) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Права</div><div class="details-value">${escapeHtml(safe(driver?.driver_license_number) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Email</div><div class="details-value">${escapeHtml(safe(driver.email) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Телефон</div><div class="details-value">${escapeHtml(safe(driver.phone) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(driver.status) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Контракт</div><div class="details-value">${escapeHtml(safe(driver.contract_status) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Онбординг</div><div class="details-value">${escapeHtml(safe(driver.onboarding_stage) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Паспорт</div><div class="details-value">${escapeHtml(safe(driver.passport_number) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Права</div><div class="details-value">${escapeHtml(safe(driver.driver_license_number) || '-')}</div></div>
         </div>
       </div>
 
@@ -980,31 +1494,36 @@ function renderDetailsPanel() {
 
   if (state.selectedDetails.type === 'vehicle') {
     const vehicle = vehiclesMap[String(state.selectedDetails.id)];
-    const owner = ownersMap[String(vehicle?.owner_id)];
-    const assignment = getCurrentAssignmentForVehicle(vehicle?.id);
+    if (!vehicle) {
+      el.detailsPanel.classList.add('hidden');
+      return;
+    }
+
+    const owner = ownersMap[String(vehicle.owner_id)];
+    const assignment = getCurrentAssignmentForVehicle(vehicle.id);
     const driver = assignment ? driversMap[String(assignment.driver_id)] : null;
 
     el.detailsKicker.textContent = 'Vehicle details';
-    el.detailsTitle.textContent = safe(vehicle?.plate_number) || 'Авто';
+    el.detailsTitle.textContent = safe(vehicle.plate_number) || 'Авто';
     el.detailsBody.innerHTML = `
       <div class="details-section">
         <h4>Основне</h4>
         <div class="details-list">
-          <div class="details-item"><div class="details-label">Марка</div><div class="details-value">${escapeHtml(safe(vehicle?.brand) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Модель</div><div class="details-value">${escapeHtml(safe(vehicle?.model) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Рік</div><div class="details-value">${escapeHtml(safe(vehicle?.year) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">VIN</div><div class="details-value">${escapeHtml(safe(vehicle?.vin) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(vehicle?.status) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Пальне</div><div class="details-value">${escapeHtml(safe(vehicle?.fuel_type) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Марка</div><div class="details-value">${escapeHtml(safe(vehicle.brand) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Модель</div><div class="details-value">${escapeHtml(safe(vehicle.model) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Рік</div><div class="details-value">${escapeHtml(safe(vehicle.year) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">VIN</div><div class="details-value">${escapeHtml(safe(vehicle.vin) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(vehicle.status) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Пальне</div><div class="details-value">${escapeHtml(safe(vehicle.fuel_type) || '-')}</div></div>
         </div>
       </div>
 
       <div class="details-section">
         <h4>Документи</h4>
         <div class="details-list">
-          <div class="details-item"><div class="details-label">Страховка</div><div class="details-value">${escapeHtml(safe(vehicle?.insurance_expiry) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Огляд</div><div class="details-value">${escapeHtml(safe(vehicle?.inspection_expiry) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Поліс</div><div class="details-value">${escapeHtml(safe(vehicle?.policy_number) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Страховка</div><div class="details-value">${escapeHtml(safe(vehicle.insurance_expiry) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Огляд</div><div class="details-value">${escapeHtml(safe(vehicle.inspection_expiry) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Поліс</div><div class="details-value">${escapeHtml(safe(vehicle.policy_number) || '-')}</div></div>
         </div>
       </div>
 
@@ -1021,7 +1540,12 @@ function renderDetailsPanel() {
 
   if (state.selectedDetails.type === 'owner') {
     const owner = ownersMap[String(state.selectedDetails.id)];
-    const vehicles = state.vehicles.filter(v => String(v.owner_id) === String(owner?.id));
+    if (!owner) {
+      el.detailsPanel.classList.add('hidden');
+      return;
+    }
+
+    const vehicles = state.vehicles.filter(v => String(v.owner_id) === String(owner.id));
 
     el.detailsKicker.textContent = 'Owner details';
     el.detailsTitle.textContent = ownerLabel(owner);
@@ -1029,11 +1553,11 @@ function renderDetailsPanel() {
       <div class="details-section">
         <h4>Основне</h4>
         <div class="details-list">
-          <div class="details-item"><div class="details-label">Тип</div><div class="details-value">${escapeHtml(safe(owner?.owner_type) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Email</div><div class="details-value">${escapeHtml(safe(owner?.email) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Телефон</div><div class="details-value">${escapeHtml(safe(owner?.phone) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Рахунок</div><div class="details-value">${escapeHtml(safe(owner?.bank_account) || '-')}</div></div>
-          <div class="details-item"><div class="details-label">Умови</div><div class="details-value">${escapeHtml(safe(owner?.settlement_terms) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Тип</div><div class="details-value">${escapeHtml(safe(owner.owner_type) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Email</div><div class="details-value">${escapeHtml(safe(owner.email) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Телефон</div><div class="details-value">${escapeHtml(safe(owner.phone) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Рахунок</div><div class="details-value">${escapeHtml(safe(owner.bank_account) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Умови</div><div class="details-value">${escapeHtml(safe(owner.settlement_terms) || '-')}</div></div>
         </div>
       </div>
 
@@ -1058,10 +1582,17 @@ function renderDetailsPanel() {
 
   if (state.selectedDetails.type === 'settlement') {
     const settlement = state.settlements.find(s => String(s.id) === String(state.selectedDetails.id));
-    const driver = driversMap[String(settlement?.driver_id)];
-    const vehicle = vehiclesMap[String(settlement?.vehicle_id)];
-    const period = periodsMap[String(settlement?.period_id)];
-    const doc = state.documents.find(d => String(d.entity_id) === String(settlement?.id) && safe(d.document_type) === 'settlement_pdf');
+    if (!settlement) {
+      el.detailsPanel.classList.add('hidden');
+      return;
+    }
+
+    const driver = driversMap[String(settlement.driver_id)];
+    const vehicle = vehiclesMap[String(settlement.vehicle_id)];
+    const period = periodsMap[String(settlement.period_id)];
+    const doc = state.documents.find(
+      d => String(d.entity_id) === String(settlement.id) && safe(d.document_type) === 'settlement_pdf'
+    );
 
     el.detailsKicker.textContent = 'Settlement details';
     el.detailsTitle.textContent = settlementPeriodLabel(settlement, periodsMap);
@@ -1072,22 +1603,22 @@ function renderDetailsPanel() {
           <div class="details-item"><div class="details-label">Водій</div><div class="details-value">${escapeHtml(fullName(driver))}</div></div>
           <div class="details-item"><div class="details-label">Авто</div><div class="details-value">${escapeHtml(vehicleLabel(vehicle))}</div></div>
           <div class="details-item"><div class="details-label">Період</div><div class="details-value">${escapeHtml(periodLabel(period))}</div></div>
-          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(settlement?.status) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(settlement.status) || '-')}</div></div>
         </div>
       </div>
 
       <div class="details-section">
         <h4>Фінанси</h4>
         <div class="details-list">
-          <div class="details-item"><div class="details-label">Gross</div><div class="details-value">${money(settlement?.gross_platform_income)}</div></div>
-          <div class="details-item"><div class="details-label">Net</div><div class="details-value">${money(settlement?.platform_net_income)}</div></div>
-          <div class="details-item"><div class="details-label">Bonus</div><div class="details-value">${money(settlement?.bonuses)}</div></div>
-          <div class="details-item"><div class="details-label">Cash</div><div class="details-value">${money(settlement?.cash_collected)}</div></div>
-          <div class="details-item"><div class="details-label">Комісія</div><div class="details-value">${money(settlement?.company_commission)}</div></div>
-          <div class="details-item"><div class="details-label">Fee</div><div class="details-value">${money(settlement?.weekly_settlement_fee)}</div></div>
-          <div class="details-item"><div class="details-label">Оренда</div><div class="details-value">${money(settlement?.rent_total)}</div></div>
-          <div class="details-item"><div class="details-label">Пальне</div><div class="details-value">${money(settlement?.fuel_total)}</div></div>
-          <div class="details-item"><div class="details-label">Payout</div><div class="details-value">${money(settlement?.payout_to_driver)}</div></div>
+          <div class="details-item"><div class="details-label">Gross</div><div class="details-value">${money(settlement.gross_platform_income)}</div></div>
+          <div class="details-item"><div class="details-label">Net</div><div class="details-value">${money(settlement.platform_net_income)}</div></div>
+          <div class="details-item"><div class="details-label">Bonus</div><div class="details-value">${money(settlement.bonuses)}</div></div>
+          <div class="details-item"><div class="details-label">Cash</div><div class="details-value">${money(settlement.cash_collected)}</div></div>
+          <div class="details-item"><div class="details-label">Комісія</div><div class="details-value">${money(settlement.company_commission)}</div></div>
+          <div class="details-item"><div class="details-label">Fee</div><div class="details-value">${money(settlement.weekly_settlement_fee)}</div></div>
+          <div class="details-item"><div class="details-label">Оренда</div><div class="details-value">${money(settlement.rent_total)}</div></div>
+          <div class="details-item"><div class="details-label">Пальне</div><div class="details-value">${money(settlement.fuel_total)}</div></div>
+          <div class="details-item"><div class="details-label">Payout</div><div class="details-value">${money(settlement.payout_to_driver)}</div></div>
         </div>
       </div>
 
@@ -1095,11 +1626,23 @@ function renderDetailsPanel() {
         <h4>Документ</h4>
         <div class="details-list">
           <div class="details-item"><div class="details-label">Settlement PDF</div><div class="details-value">${doc ? 'є в documents' : 'немає'}</div></div>
-          <div class="details-item"><div class="details-label">URL</div><div class="details-value">${escapeHtml(safe(doc?.file_url) || safe(settlement?.pdf_url) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">URL</div><div class="details-value">${escapeHtml(safe(doc?.file_url) || safe(settlement.pdf_url) || '-')}</div></div>
         </div>
       </div>
     `;
   }
+}
+
+function bindDetailRowClicks() {
+  document.querySelectorAll('[data-detail-type][data-detail-id]').forEach(node => {
+    node.addEventListener('click', () => {
+      state.selectedDetails = {
+        type: node.getAttribute('data-detail-type'),
+        id: node.getAttribute('data-detail-id')
+      };
+      renderAll();
+    });
+  });
 }
 
 function bindEvents() {
@@ -1107,6 +1650,7 @@ function bindEvents() {
   if (el.signUpBtn) el.signUpBtn.addEventListener('click', signUp);
   if (el.logoutBtn) el.logoutBtn.addEventListener('click', signOut);
   if (el.refreshBtn) el.refreshBtn.addEventListener('click', loadAllData);
+
   if (el.closeDetailsBtn) {
     el.closeDetailsBtn.addEventListener('click', () => {
       state.selectedDetails = null;
