@@ -1057,6 +1057,7 @@ export function createDriverSettlementsModule({
 
     for (const file of archivedFiles) {
       const title = safe(file.original_name) || safe(file.name);
+      const archiveNote = `Archived from weekly settlement import (${humanize(file.kind || 'report')}) on ${safe(archiveResult.archived_at || isoNow()).slice(0, 16).replace('T', ' ')}`;
       const payload = {
         entity_type: 'period',
         entity_id: safe(period.id),
@@ -1069,7 +1070,7 @@ export function createDriverSettlementsModule({
         file_url: nullIfBlank(file.web_view_link),
         folder_url: nullIfBlank(file.folder_url || archiveResult.archive_folder_url),
         mime_type: nullIfBlank(file.mime_type || 'text/csv'),
-        notes: nullIfBlank(`Archived from weekly settlement import (${humanize(file.kind || 'report')}) on ${safe(archiveResult.archived_at || isoNow()).slice(0, 16).replace('T', ' ')}`),
+        notes: nullIfBlank(archiveNote),
         updated_at: isoNow()
       };
 
@@ -1080,16 +1081,27 @@ export function createDriverSettlementsModule({
         safe(document.title) === title
       );
 
-      if (existingDocument) {
-        const { error } = await db
-          .from('documents')
-          .update(payload)
-          .eq('id', existingDocument.id);
-        if (error) throw error;
-      } else {
-        const { error } = await db.from('documents').insert([payload]);
-        if (error) throw error;
+      const saveWithPayload = async savePayload => {
+        if (existingDocument) {
+          return db
+            .from('documents')
+            .update(savePayload)
+            .eq('id', existingDocument.id);
+        }
+
+        return db.from('documents').insert([savePayload]);
+      };
+
+      let { error } = await saveWithPayload(payload);
+
+      if (error && safe(error.message).includes("Could not find the 'notes' column")) {
+        const fallbackPayload = { ...payload };
+        delete fallbackPayload.notes;
+        const retry = await saveWithPayload(fallbackPayload);
+        error = retry.error;
       }
+
+      if (error) throw error;
     }
   }
 
