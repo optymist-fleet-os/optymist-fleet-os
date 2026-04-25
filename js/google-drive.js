@@ -56,6 +56,7 @@ function normalizeDriveState(payload = {}) {
   return getInitialGoogleDriveState({
     configured: payload.configured === true,
     connected: payload.connected === true,
+    auth_mode: safe(payload.auth_mode),
     service_account_email: safe(payload.service_account_email),
     root_folder_id: safe(payload.root_folder_id),
     root_folder_name: safe(payload.root_folder_name),

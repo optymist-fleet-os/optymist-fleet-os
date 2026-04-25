@@ -15,6 +15,7 @@ module.exports = async function handler(req, res) {
       res.status(200).json({
         configured: false,
         connected: false,
+        auth_mode: config.authMode,
         missing: config.missing,
         root_folder_id: config.rootFolderId,
         checked_at: new Date().toISOString()
@@ -27,6 +28,7 @@ module.exports = async function handler(req, res) {
     res.status(200).json({
       configured: true,
       connected: true,
+      auth_mode: config.authMode,
       service_account_email: config.serviceAccountEmail,
       root_folder_id: rootFolder.id,
       root_folder_name: rootFolder.name,
@@ -38,6 +40,7 @@ module.exports = async function handler(req, res) {
     res.status(error.statusCode === 401 ? 401 : 200).json({
       configured: config.configured,
       connected: false,
+      auth_mode: config.authMode,
       missing: config.missing,
       service_account_email: config.serviceAccountEmail,
       root_folder_id: config.rootFolderId,

@@ -74,6 +74,7 @@ export function getInitialGoogleDriveState(overrides = {}) {
   return {
     configured: false,
     connected: false,
+    auth_mode: '',
     service_account_email: '',
     root_folder_id: '',
     root_folder_name: '',

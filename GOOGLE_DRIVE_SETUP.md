@@ -1,51 +1,62 @@
 # Google Drive Setup
 
-This CRM now includes a server-side Google Drive archive layer for weekly import reports.
+The CRM supports two Google Drive auth modes:
+
+- OAuth refresh token, recommended for the current Optymist setup.
+- Service account JSON key, only if service account key creation is allowed.
+
+Your current Google Cloud organisation blocks service account key creation with:
+
+- `iam.disableServiceAccountKeyCreation`
+
+Use OAuth refresh token unless that policy is intentionally changed later.
 
 ## Current flow
 
 - Driver settlement CSV files are parsed in the browser.
-- If Google Drive is configured, the original CSV files are archived through Vercel API routes.
-- Supabase stores metadata only: status, drive IDs, links, entity binding.
+- If Google Drive is connected, original CSV reports are archived through Vercel API routes.
+- Supabase stores metadata only: statuses, Drive IDs, links, entity binding and calculation snapshots.
 
-## Vercel environment variables
+## Target Drive folder
 
-Set these in the Vercel project:
-
-- `GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL`
-- `GOOGLE_DRIVE_PRIVATE_KEY`
-- `GOOGLE_DRIVE_ROOT_FOLDER_ID`
-
-For the provided target folder, the root folder id is:
+Root folder id:
 
 - `116xjmvVnHwxLyOcmpfGIgRgGW8cVr7o-`
 
-## Recommended auth model
+Folder URL:
 
-Use a Google service account for back-office automation.
+- `https://drive.google.com/drive/folders/116xjmvVnHwxLyOcmpfGIgRgGW8cVr7o-`
 
-Recommended when:
+## OAuth setup, recommended
 
-- the CRM should save reports and generated PDFs automatically
-- uploads should not depend on a staff member being logged in to Google
-- the folder can be shared to the service account or moved into a Shared Drive
+Create a Google OAuth client and use it to generate a refresh token for the Google account that owns or can edit the CRM folder.
 
-## What to do in Google Cloud
+Set these Vercel environment variables:
 
-1. Create or use a Google Cloud project.
-2. Enable the Google Drive API.
-3. Create a service account.
-4. Generate a JSON key for that service account.
-5. Put the service account email and private key into Vercel env vars.
-6. Share the target folder or Shared Drive with that service account as editor/content manager.
+- `GOOGLE_DRIVE_CLIENT_ID`
+- `GOOGLE_DRIVE_CLIENT_SECRET`
+- `GOOGLE_DRIVE_REFRESH_TOKEN`
+- `GOOGLE_DRIVE_ROOT_FOLDER_ID=116xjmvVnHwxLyOcmpfGIgRgGW8cVr7o-`
 
-## Important note about folder ownership
+Required OAuth scope:
 
-For production, Shared Drive is the cleanest setup.
+- `https://www.googleapis.com/auth/drive`
 
-If the target folder stays only in a personal My Drive context and the service account cannot write there cleanly, switch to a Shared Drive or use OAuth refresh-token auth in a next pass.
+After adding or changing Vercel environment variables, redeploy the production deployment.
 
-## Current API routes
+## Service account setup, optional
+
+Use this only when service account key creation is enabled.
+
+Set these Vercel environment variables:
+
+- `GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL`
+- `GOOGLE_DRIVE_PRIVATE_KEY`
+- `GOOGLE_DRIVE_ROOT_FOLDER_ID=116xjmvVnHwxLyOcmpfGIgRgGW8cVr7o-`
+
+The target Drive folder or Shared Drive must be shared with the service account as Editor or Content manager.
+
+## API routes
 
 - `GET /api/google-drive/status`
 - `POST /api/google-drive/archive-reports`

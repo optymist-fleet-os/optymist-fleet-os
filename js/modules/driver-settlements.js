@@ -1288,7 +1288,7 @@ export function createDriverSettlementsModule({
                   ? safe(driveState.root_folder_name) || 'Drive root verified'
                   : safe(driveState.error) || (Array.isArray(driveState.missing) && driveState.missing.length
                     ? `Missing: ${driveState.missing.join(', ')}`
-                    : 'Set env vars and share the target folder to the service account.')
+                    : 'Set Google Drive OAuth env vars on Vercel.')
               )}</div>
             </div>
             <div class="helper-card">

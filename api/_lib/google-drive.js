@@ -29,31 +29,40 @@ function normalizeFolderName(value) {
 function getDriveConfig() {
   const serviceAccountEmail = String(process.env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL || '').trim();
   const privateKey = String(process.env.GOOGLE_DRIVE_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+  const oauthClientId = String(process.env.GOOGLE_DRIVE_CLIENT_ID || '').trim();
+  const oauthClientSecret = String(process.env.GOOGLE_DRIVE_CLIENT_SECRET || '').trim();
+  const oauthRefreshToken = String(process.env.GOOGLE_DRIVE_REFRESH_TOKEN || '').trim();
   const rootFolderId = String(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '').trim();
   const missing = [];
+  const serviceAccountConfigured = Boolean(serviceAccountEmail && privateKey);
+  const oauthConfigured = Boolean(oauthClientId && oauthClientSecret && oauthRefreshToken);
+  const authMode = serviceAccountConfigured
+    ? 'service_account'
+    : oauthConfigured
+      ? 'oauth_refresh_token'
+      : '';
 
-  if (!serviceAccountEmail) missing.push('GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL');
-  if (!privateKey) missing.push('GOOGLE_DRIVE_PRIVATE_KEY');
   if (!rootFolderId) missing.push('GOOGLE_DRIVE_ROOT_FOLDER_ID');
+  if (!serviceAccountConfigured && !oauthConfigured) {
+    missing.push('GOOGLE_DRIVE_CLIENT_ID');
+    missing.push('GOOGLE_DRIVE_CLIENT_SECRET');
+    missing.push('GOOGLE_DRIVE_REFRESH_TOKEN');
+  }
 
   return {
-    configured: missing.length === 0,
+    authMode,
+    configured: Boolean(rootFolderId && (serviceAccountConfigured || oauthConfigured)),
     missing,
+    oauthClientId,
+    oauthClientSecret,
+    oauthRefreshToken,
     serviceAccountEmail,
     privateKey,
     rootFolderId
   };
 }
 
-async function getAccessToken() {
-  const config = getDriveConfig();
-
-  if (!config.configured) {
-    const error = new Error(`Google Drive is not configured. Missing: ${config.missing.join(', ')}`);
-    error.statusCode = 503;
-    throw error;
-  }
-
+async function getServiceAccountAccessToken(config) {
   const issuedAt = Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + 3600;
   const header = {
@@ -95,6 +104,53 @@ async function getAccessToken() {
   }
 
   return payloadJson.access_token;
+}
+
+async function getOAuthRefreshTokenAccessToken(config) {
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      client_id: config.oauthClientId,
+      client_secret: config.oauthClientSecret,
+      refresh_token: config.oauthRefreshToken,
+      grant_type: 'refresh_token'
+    })
+  });
+
+  const payloadJson = await response.json();
+
+  if (!response.ok || !payloadJson.access_token) {
+    const error = new Error(payloadJson.error_description || payloadJson.error || 'Failed to refresh Google Drive token.');
+    error.statusCode = 502;
+    throw error;
+  }
+
+  return payloadJson.access_token;
+}
+
+async function getAccessToken() {
+  const config = getDriveConfig();
+
+  if (!config.configured) {
+    const error = new Error(`Google Drive is not configured. Missing: ${config.missing.join(', ')}`);
+    error.statusCode = 503;
+    throw error;
+  }
+
+  if (config.authMode === 'service_account') {
+    return getServiceAccountAccessToken(config);
+  }
+
+  if (config.authMode === 'oauth_refresh_token') {
+    return getOAuthRefreshTokenAccessToken(config);
+  }
+
+  const error = new Error('Google Drive auth mode is not configured.');
+  error.statusCode = 503;
+  throw error;
 }
 
 async function driveRequest(path, options = {}, upload = false) {

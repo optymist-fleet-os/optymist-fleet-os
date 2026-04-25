@@ -384,10 +384,10 @@ export function createDocumentsModule({ el, loadAllData, renderAll, setPage, clo
             )}</div>
             <div class="helper-note">${escapeHtml(
               driveState.connected
-                ? safe(driveState.service_account_email) || 'Service account verified'
+                ? safe(driveState.service_account_email) || humanize(driveState.auth_mode || 'OAuth connected')
                 : safe(driveState.error) || (Array.isArray(driveState.missing) && driveState.missing.length
                   ? `Missing: ${driveState.missing.join(', ')}`
-                  : 'Set Google Drive env vars on Vercel and share the target folder to the service account.')
+                  : 'Set Google Drive OAuth env vars on Vercel.')
             )}</div>
           </div>
 
