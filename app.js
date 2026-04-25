@@ -34,11 +34,12 @@ const state = {
     settlementStatus: 'all'
   },
   forms: {
-    driver: false,
-    vehicle: false,
-    owner: false,
-    period: false
-  }
+  driver: false,
+  vehicle: false,
+  owner: false,
+  period: false,
+  assignment: false
+}
 };
 
 const el = {};
@@ -180,7 +181,8 @@ function closeAllForms() {
     driver: false,
     vehicle: false,
     owner: false,
-    period: false
+    period: false,
+    assignment: false
   };
 }
 
