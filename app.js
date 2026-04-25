@@ -41,8 +41,10 @@ const state = {
     vehicle: false,
     owner: false,
     period: false,
-    assignment: false
-  }
+    assignment: false,
+    settlement: false
+  },
+  settlementDraft: getInitialSettlementDraft()
 };
 
 const el = {};
@@ -71,6 +73,13 @@ function escapeHtml(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+function decimalInputValue(value, fallback = '') {
+  const s = safe(value);
+  if (!s) return fallback;
+  const n = Number(s);
+  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : s;
 }
 
 function showMsg(target, text, type = 'error') {
@@ -439,6 +448,166 @@ function buildOwnerSettlementRows() {
   return { rows, unresolvedCount };
 }
 
+function getInitialSettlementDraft(overrides = {}) {
+  return {
+    settlement_id: '',
+    period_id: '',
+    driver_id: '',
+    vehicle_id: '',
+    gross_platform_income: '',
+    platform_net_income: '',
+    bonuses: '0',
+    cash_collected: '0',
+    company_commission: '0',
+    weekly_settlement_fee: '0',
+    rent_total: '',
+    fuel_total: '0',
+    carry_forward_balance: '0',
+    status: 'calculated',
+    ...overrides
+  };
+}
+
+function settlementToDraft(settlement) {
+  if (!settlement) return getInitialSettlementDraft();
+
+  return getInitialSettlementDraft({
+    settlement_id: safe(settlement.id),
+    period_id: safe(settlement.period_id),
+    driver_id: safe(settlement.driver_id),
+    vehicle_id: safe(settlement.vehicle_id),
+    gross_platform_income: decimalInputValue(settlement.gross_platform_income),
+    platform_net_income: decimalInputValue(settlement.platform_net_income),
+    bonuses: decimalInputValue(settlement.bonuses, '0'),
+    cash_collected: decimalInputValue(settlement.cash_collected, '0'),
+    company_commission: decimalInputValue(settlement.company_commission, '0'),
+    weekly_settlement_fee: decimalInputValue(settlement.weekly_settlement_fee, '0'),
+    rent_total: decimalInputValue(settlement.rent_total),
+    fuel_total: decimalInputValue(settlement.fuel_total, '0'),
+    carry_forward_balance: decimalInputValue(settlement.carry_forward_balance, '0'),
+    status: safe(settlement.status) || 'calculated'
+  });
+}
+
+function readSettlementDraftFromForm(form) {
+  const fd = new FormData(form);
+
+  return getInitialSettlementDraft({
+    settlement_id: safe(fd.get('settlement_id')),
+    period_id: safe(fd.get('period_id')),
+    driver_id: safe(fd.get('driver_id')),
+    vehicle_id: safe(fd.get('vehicle_id')),
+    gross_platform_income: safe(fd.get('gross_platform_income')),
+    platform_net_income: safe(fd.get('platform_net_income')),
+    bonuses: safe(fd.get('bonuses')) || '0',
+    cash_collected: safe(fd.get('cash_collected')) || '0',
+    company_commission: safe(fd.get('company_commission')) || '0',
+    weekly_settlement_fee: safe(fd.get('weekly_settlement_fee')) || '0',
+    rent_total: safe(fd.get('rent_total')),
+    fuel_total: safe(fd.get('fuel_total')) || '0',
+    carry_forward_balance: safe(fd.get('carry_forward_balance')) || '0',
+    status: safe(fd.get('status')) || 'calculated'
+  });
+}
+
+function findExistingSettlement(periodId, driverId, excludeId = '') {
+  return (
+    state.settlements.find(settlement =>
+      String(settlement.period_id) === String(periodId) &&
+      String(settlement.driver_id) === String(driverId) &&
+      String(settlement.id) !== String(excludeId || '')
+    ) || null
+  );
+}
+
+function getAssignmentsForDriverPeriod(driverId, period) {
+  if (!driverId || !period) return [];
+
+  return state.assignments
+    .filter(assignment =>
+      String(assignment.driver_id) === String(driverId) &&
+      dateRangeOverlaps(
+        assignment.assigned_from,
+        assignment.assigned_to,
+        period.date_from,
+        period.date_to
+      )
+    )
+    .map(assignment => ({
+      ...assignment,
+      overlap_days: rangeOverlapDays(
+        assignment.assigned_from,
+        assignment.assigned_to,
+        period.date_from,
+        period.date_to
+      ),
+      prorated_rent_total:
+        num(assignment.driver_weekly_rent) *
+        (rangeOverlapDays(
+          assignment.assigned_from,
+          assignment.assigned_to,
+          period.date_from,
+          period.date_to
+        ) / 7)
+    }))
+    .sort((a, b) => {
+      const overlapDiff = num(b.overlap_days) - num(a.overlap_days);
+      if (overlapDiff) return overlapDiff;
+      return safe(b.assigned_from).localeCompare(safe(a.assigned_from));
+    });
+}
+
+function buildDriverSettlementContext(draft = state.settlementDraft) {
+  const periodsMap = mapById(state.periods);
+  const vehiclesMap = mapById(state.vehicles);
+
+  const period = periodsMap[String(draft.period_id)];
+  const driver = state.drivers.find(item => String(item.id) === String(draft.driver_id)) || null;
+  const assignments = getAssignmentsForDriverPeriod(draft.driver_id, period);
+
+  let selectedAssignment = null;
+  if (safe(draft.vehicle_id)) {
+    selectedAssignment =
+      assignments.find(item => String(item.vehicle_id) === String(draft.vehicle_id)) || null;
+  }
+  if (!selectedAssignment) selectedAssignment = assignments[0] || null;
+
+  const inferredVehicleId = safe(draft.vehicle_id) || safe(selectedAssignment?.vehicle_id);
+  const inferredVehicle = vehiclesMap[String(inferredVehicleId)] || null;
+  const inferredRentTotal = assignments.reduce((sum, item) => sum + num(item.prorated_rent_total), 0);
+  const effectiveRentTotal = safe(draft.rent_total) ? num(draft.rent_total) : inferredRentTotal;
+  const effectivePlatformNetIncome = safe(draft.platform_net_income)
+    ? num(draft.platform_net_income)
+    : num(draft.gross_platform_income) - num(draft.cash_collected);
+  const calculatedPayout =
+    effectivePlatformNetIncome +
+    num(draft.bonuses) -
+    num(draft.company_commission) -
+    num(draft.weekly_settlement_fee) -
+    effectiveRentTotal -
+    num(draft.fuel_total) +
+    num(draft.carry_forward_balance);
+
+  const existingSettlement =
+    (safe(draft.settlement_id) &&
+      state.settlements.find(item => String(item.id) === String(draft.settlement_id))) ||
+    findExistingSettlement(draft.period_id, draft.driver_id, draft.settlement_id);
+
+  return {
+    period,
+    driver,
+    vehicle: inferredVehicle,
+    selectedAssignment,
+    assignments,
+    inferredVehicleId,
+    inferredRentTotal,
+    effectiveRentTotal,
+    effectivePlatformNetIncome,
+    calculatedPayout,
+    existingSettlement
+  };
+}
+
 function nullIfBlank(v) {
   const s = safe(v);
   return s ? s : null;
@@ -459,7 +628,8 @@ function closeAllForms() {
     vehicle: false,
     owner: false,
     period: false,
-    assignment: false
+    assignment: false,
+    settlement: false
   };
 }
 
@@ -487,6 +657,20 @@ async function createVehicle(payload) {
 
 async function createPeriod(payload) {
   const { error } = await db.from('settlement_periods').insert([payload]);
+  if (error) throw error;
+}
+
+async function createSettlement(payload) {
+  const { error } = await db.from('driver_settlements').insert([payload]);
+  if (error) throw error;
+}
+
+async function updateSettlement(settlementId, payload) {
+  const { error } = await db
+    .from('driver_settlements')
+    .update(payload)
+    .eq('id', settlementId);
+
   if (error) throw error;
 }
 
@@ -658,6 +842,264 @@ async function onCreatePeriodSubmit(event) {
   } catch (e) {
     showMsg(el.appMsg, e.message || 'Не вдалося створити період');
   }
+}
+
+function openNewSettlementForm() {
+  closeAllForms();
+  state.forms.settlement = true;
+  state.settlementDraft = getInitialSettlementDraft();
+
+  if (state.selectedDetails?.type === 'settlement') {
+    const settlement = state.settlements.find(item => String(item.id) === String(state.selectedDetails.id));
+    if (settlement) {
+      state.settlementDraft.period_id = safe(settlement.period_id);
+      state.settlementDraft.driver_id = safe(settlement.driver_id);
+    }
+  }
+
+  setPage('settlements');
+  renderAll();
+}
+
+function closeSettlementForm() {
+  state.forms.settlement = false;
+  state.settlementDraft = getInitialSettlementDraft();
+  renderAll();
+}
+
+function openSettlementEditor(settlementId) {
+  const settlement = state.settlements.find(item => String(item.id) === String(settlementId));
+  if (!settlement) return;
+
+  closeAllForms();
+  state.forms.settlement = true;
+  state.settlementDraft = settlementToDraft(settlement);
+  state.selectedDetails = { type: 'settlement', id: String(settlement.id) };
+  setPage('settlements');
+  renderAll();
+}
+
+function renderSettlementFormCard() {
+  const draft = state.settlementDraft || getInitialSettlementDraft();
+  const context = buildDriverSettlementContext(draft);
+  const selectedVehicleId = safe(draft.vehicle_id) || safe(context.inferredVehicleId);
+  const rentTotalValue =
+    safe(draft.rent_total) ||
+    (context.inferredRentTotal ? decimalInputValue(context.inferredRentTotal) : '');
+
+  return `
+    <div class="form-card">
+      <h3 class="form-title">${safe(draft.settlement_id) ? 'Редагувати розрахунок водія' : 'Розрахунок водія'}</h3>
+
+      <form id="driverSettlementForm">
+        <input type="hidden" name="settlement_id" value="${escapeHtml(draft.settlement_id)}" />
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Період *</label>
+            <select name="period_id" required>
+              <option value="">Вибери період</option>
+              ${state.periods.map(period => `
+                <option value="${escapeHtml(period.id)}" ${String(period.id) === String(draft.period_id) ? 'selected' : ''}>
+                  ${escapeHtml(periodLabel(period))}
+                </option>
+              `).join('')}
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label>Водій *</label>
+            <select name="driver_id" required>
+              <option value="">Вибери водія</option>
+              ${state.drivers.map(driver => `
+                <option value="${escapeHtml(driver.id)}" ${String(driver.id) === String(draft.driver_id) ? 'selected' : ''}>
+                  ${escapeHtml(fullName(driver))}
+                </option>
+              `).join('')}
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label>Авто *</label>
+            <select name="vehicle_id" required>
+              <option value="">Вибери авто</option>
+              ${state.vehicles.map(vehicle => `
+                <option value="${escapeHtml(vehicle.id)}" ${String(vehicle.id) === String(selectedVehicleId) ? 'selected' : ''}>
+                  ${escapeHtml(vehicleLabel(vehicle))}
+                </option>
+              `).join('')}
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label>Gross</label>
+            <input name="gross_platform_income" type="number" step="0.01" value="${escapeHtml(draft.gross_platform_income)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Platform net</label>
+            <input name="platform_net_income" type="number" step="0.01" value="${escapeHtml(draft.platform_net_income)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Bonus</label>
+            <input name="bonuses" type="number" step="0.01" value="${escapeHtml(draft.bonuses)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Cash</label>
+            <input name="cash_collected" type="number" step="0.01" value="${escapeHtml(draft.cash_collected)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Комісія компанії</label>
+            <input name="company_commission" type="number" step="0.01" value="${escapeHtml(draft.company_commission)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Weekly fee</label>
+            <input name="weekly_settlement_fee" type="number" step="0.01" value="${escapeHtml(draft.weekly_settlement_fee)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Оренда</label>
+            <input name="rent_total" type="number" step="0.01" value="${escapeHtml(rentTotalValue)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Пальне</label>
+            <input name="fuel_total" type="number" step="0.01" value="${escapeHtml(draft.fuel_total)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Коригування / carry forward</label>
+            <input name="carry_forward_balance" type="number" step="0.01" value="${escapeHtml(draft.carry_forward_balance)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Статус</label>
+            <select name="status">
+              <option value="draft" ${draft.status === 'draft' ? 'selected' : ''}>draft</option>
+              <option value="calculated" ${draft.status === 'calculated' ? 'selected' : ''}>calculated</option>
+              <option value="approved" ${draft.status === 'approved' ? 'selected' : ''}>approved</option>
+              <option value="closed" ${draft.status === 'closed' ? 'selected' : ''}>closed</option>
+              <option value="sent" ${draft.status === 'sent' ? 'selected' : ''}>sent</option>
+              <option value="paid" ${draft.status === 'paid' ? 'selected' : ''}>paid</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="helper-text">
+          Формула payout: platform net + bonus - commission - weekly fee - rent - fuel + carry forward.
+          Якщо platform net порожній, система бере gross - cash.
+        </div>
+
+        <div class="details-section" style="margin-top:14px;">
+          <h4 style="margin-bottom:8px;">Прев’ю</h4>
+          <div class="details-list">
+            <div class="details-item"><div class="details-label">Авто з assignment</div><div class="details-value">${escapeHtml(vehicleLabel(context.vehicle))}</div></div>
+            <div class="details-item"><div class="details-label">Overlap days</div><div class="details-value">${context.assignments.reduce((sum, assignment) => sum + num(assignment.overlap_days), 0)}</div></div>
+            <div class="details-item"><div class="details-label">Оренда з history</div><div class="details-value">${money(context.inferredRentTotal)}</div></div>
+            <div class="details-item"><div class="details-label">Platform net</div><div class="details-value">${money(context.effectivePlatformNetIncome)}</div></div>
+            <div class="details-item"><div class="details-label">Payout</div><div class="details-value">${money(context.calculatedPayout)}</div></div>
+            <div class="details-item"><div class="details-label">Save mode</div><div class="details-value">${context.existingSettlement ? `update #${shortId(context.existingSettlement.id)}` : 'create new'}</div></div>
+          </div>
+        </div>
+
+        ${context.assignments.length ? `
+          <div class="helper-text">
+            Assignment history in period:
+            ${escapeHtml(context.assignments.map(assignment => {
+              const vehicle = state.vehicles.find(item => String(item.id) === String(assignment.vehicle_id));
+              return `${vehicleLabel(vehicle)} (${assignment.overlap_days} дн., ${money(assignment.prorated_rent_total)})`;
+            }).join('; '))}
+          </div>
+        ` : `
+          <div class="helper-text">Для цього періоду не знайдено assignment history. Вибери авто і оренду вручну.</div>
+        `}
+
+        <div class="form-actions">
+          <button type="submit">${context.existingSettlement || safe(draft.settlement_id) ? 'Оновити розрахунок' : 'Зберегти розрахунок'}</button>
+          <button type="button" class="secondary" id="cancelSettlementFormBtn">Скасувати</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+async function onSettlementFormSubmit(event) {
+  event.preventDefault();
+  clearMsg(el.appMsg);
+
+  const draft = readSettlementDraftFromForm(event.target);
+  const context = buildDriverSettlementContext(draft);
+  const vehicleId = safe(draft.vehicle_id) || safe(context.inferredVehicleId);
+  const rentTotal = safe(draft.rent_total) ? num(draft.rent_total) : context.inferredRentTotal;
+
+  if (!draft.period_id || !draft.driver_id) {
+    showMsg(el.appMsg, 'Потрібно вибрати період і водія');
+    return;
+  }
+
+  if (!vehicleId) {
+    showMsg(el.appMsg, 'Потрібно вибрати авто або мати assignment history в цьому періоді');
+    return;
+  }
+
+  const payload = {
+    period_id: draft.period_id,
+    driver_id: draft.driver_id,
+    vehicle_id: vehicleId,
+    gross_platform_income: num(draft.gross_platform_income),
+    platform_net_income: context.effectivePlatformNetIncome,
+    bonuses: num(draft.bonuses),
+    cash_collected: num(draft.cash_collected),
+    company_commission: num(draft.company_commission),
+    weekly_settlement_fee: num(draft.weekly_settlement_fee),
+    rent_total: rentTotal,
+    fuel_total: num(draft.fuel_total),
+    carry_forward_balance: num(draft.carry_forward_balance),
+    payout_to_driver: context.calculatedPayout,
+    status: draft.status || 'calculated'
+  };
+
+  const existingSettlement =
+    (safe(draft.settlement_id) &&
+      state.settlements.find(item => String(item.id) === String(draft.settlement_id))) ||
+    context.existingSettlement;
+
+  try {
+    if (existingSettlement) {
+      await updateSettlement(existingSettlement.id, payload);
+      showMsg(el.appMsg, 'Розрахунок водія оновлено', 'success');
+    } else {
+      await createSettlement(payload);
+      showMsg(el.appMsg, 'Розрахунок водія створено', 'success');
+    }
+
+    state.settlementDraft = getInitialSettlementDraft();
+    closeAllForms();
+    await loadAllData();
+    setPage('settlements');
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Не вдалося зберегти розрахунок водія');
+  }
+}
+
+function bindSettlementFormEvents() {
+  const form = qs('driverSettlementForm');
+  if (!form) return;
+
+  form.addEventListener('submit', onSettlementFormSubmit);
+
+  form.querySelectorAll('input, select').forEach(node => {
+    node.addEventListener('change', () => {
+      state.settlementDraft = readSettlementDraftFromForm(form);
+      renderSettlementsPage();
+    });
+  });
+
+  qs('cancelSettlementFormBtn')?.addEventListener('click', closeSettlementForm);
 }
 
 function renderAssignmentFormCard() {
@@ -1842,8 +2284,15 @@ function renderSettlementsPage() {
     <div class="card">
       <div class="action-bar">
         <div class="muted">Driver settlements по періодах</div>
-        <button id="togglePeriodFormBtn" type="button">${state.forms.period ? 'Сховати форму' : 'Додати період'}</button>
+        <div class="form-actions" style="margin-top:0;">
+          <button id="toggleSettlementFormBtn" type="button" class="secondary">
+            ${state.forms.settlement ? 'Сховати розрахунок' : 'Розрахувати водія'}
+          </button>
+          <button id="togglePeriodFormBtn" type="button">${state.forms.period ? 'Сховати форму' : 'Додати період'}</button>
+        </div>
       </div>
+
+      ${state.forms.settlement ? renderSettlementFormCard() : ''}
 
       ${
         state.forms.period ? `
@@ -1949,6 +2398,12 @@ function renderSettlementsPage() {
       </div>
     </div>
   `;
+
+  qs('toggleSettlementFormBtn')?.addEventListener('click', () => {
+    if (state.forms.settlement) closeSettlementForm();
+    else openNewSettlementForm();
+  });
+  bindSettlementFormEvents();
 
   qs('togglePeriodFormBtn')?.addEventListener('click', () => toggleForm('period'));
   qs('cancelPeriodFormBtn')?.addEventListener('click', () => toggleForm('period'));
@@ -2279,7 +2734,12 @@ function renderDetailsPanel() {
           <div class="details-item"><div class="details-label">URL</div><div class="details-value">${escapeHtml(safe(doc?.file_url) || safe(settlement.pdf_url) || '-')}</div></div>
         </div>
       </div>
+
+      <div class="form-actions">
+        <button type="button" class="secondary" id="editSettlementBtn">Редагувати розрахунок</button>
+      </div>
     `;
+    qs('editSettlementBtn')?.addEventListener('click', () => openSettlementEditor(settlement.id));
   }
 }
 
