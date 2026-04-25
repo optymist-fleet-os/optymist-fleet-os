@@ -538,6 +538,17 @@ button.secondary {
   font-weight: 700;
 }
 
+.helper-note a,
+.details-subvalue a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.helper-note a:hover,
+.details-subvalue a:hover {
+  text-decoration: underline;
+}
+
 .summary-breakdown {
   margin-top: 16px;
   border: 1px dashed var(--border);
@@ -608,6 +619,10 @@ button.secondary {
 
 .import-preview-card {
   margin-top: 16px;
+}
+
+.drive-status-card {
+  margin-bottom: 16px;
 }
 
 .history-title {

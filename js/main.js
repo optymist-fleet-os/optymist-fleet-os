@@ -1,4 +1,5 @@
 import { createAuthModule } from './auth.js';
+import { refreshGoogleDriveStatus } from './google-drive.js';
 import { db } from './supabase.js';
 import { closeAllForms, el, pageMeta, setSelectedDetails, state } from './state.js';
 import { clearMsg, qs, safe, showMsg } from './utils.js';
@@ -201,6 +202,7 @@ async function loadAllData() {
     state.commissionRules = commissionRulesRes.error ? [] : (commissionRulesRes.data || []);
     state.driverBalances = driverBalancesRes.error ? [] : (driverBalancesRes.data || []);
     state.tasksAlerts = tasksAlertsRes.error ? [] : (tasksAlertsRes.data || []);
+    await refreshGoogleDriveStatus();
 
     renderAll();
   } catch (error) {

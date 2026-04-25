@@ -60,6 +60,27 @@ export function getInitialSettlementImportState(overrides = {}) {
     warnings: [],
     last_error: '',
     last_imported_at: '',
+    drive_archive_status: 'idle',
+    drive_archive_folder_id: '',
+    drive_archive_folder_url: '',
+    drive_archived_files: [],
+    drive_archive_error: '',
+    drive_archive_last_at: '',
+    ...overrides
+  };
+}
+
+export function getInitialGoogleDriveState(overrides = {}) {
+  return {
+    configured: false,
+    connected: false,
+    service_account_email: '',
+    root_folder_id: '',
+    root_folder_name: '',
+    root_folder_url: '',
+    missing: [],
+    error: '',
+    checked_at: '',
     ...overrides
   };
 }
@@ -157,7 +178,8 @@ export const state = {
   assignmentDraft: getInitialAssignmentDraft(),
   settlementDraft: getInitialSettlementDraft(),
   settlementImport: getInitialSettlementImportState(),
-  documentDraft: getInitialDocumentDraft()
+  documentDraft: getInitialDocumentDraft(),
+  googleDrive: getInitialGoogleDriveState()
 };
 
 export const el = {};

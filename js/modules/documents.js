@@ -26,6 +26,9 @@ const DOCUMENT_TYPES = [
   'annex',
   'settlement_pdf',
   'owner_settlement_pdf',
+  'platform_report',
+  'fuel_report',
+  'payout_export',
   'insurance',
   'inspection',
   'passport_scan',
@@ -332,6 +335,7 @@ export function createDocumentsModule({ el, loadAllData, renderAll, setPage, clo
   function renderDocumentsPage() {
     if (!el.documentsPage) return;
 
+    const driveState = state.googleDrive || {};
     const filteredDocuments = state.documents.filter(document => {
       if (safe(state.filters.documentEntity) !== 'all' && safe(document.entity_type) !== safe(state.filters.documentEntity)) {
         return false;
@@ -364,6 +368,44 @@ export function createDocumentsModule({ el, loadAllData, renderAll, setPage, clo
         <div class="card"><div class="metric-label">Documents</div><div class="metric-value">${filteredDocuments.length}</div></div>
         <div class="card"><div class="metric-label">Google Drive linked</div><div class="metric-value">${filteredDocuments.filter(item => safe(item.storage_provider) === 'google_drive' && (safe(item.drive_file_id) || safe(item.file_url))).length}</div></div>
         <div class="card"><div class="metric-label">Missing / draft</div><div class="metric-value">${filteredDocuments.filter(item => ['missing', 'draft'].includes(safe(item.status))).length}</div></div>
+      </div>
+
+      <div class="card drive-status-card">
+        <h3 class="card-title">Google Drive layer</h3>
+        <div class="helper-grid">
+          <div class="helper-card">
+            <div class="helper-label">Connection</div>
+            <div class="helper-value">${escapeHtml(
+              driveState.connected
+                ? 'Connected'
+                : driveState.configured
+                  ? 'Configured, access check failed'
+                  : 'Not configured yet'
+            )}</div>
+            <div class="helper-note">${escapeHtml(
+              driveState.connected
+                ? safe(driveState.service_account_email) || 'Service account verified'
+                : safe(driveState.error) || (Array.isArray(driveState.missing) && driveState.missing.length
+                  ? `Missing: ${driveState.missing.join(', ')}`
+                  : 'Set Google Drive env vars on Vercel and share the target folder to the service account.')
+            )}</div>
+          </div>
+
+          <div class="helper-card">
+            <div class="helper-label">Root folder</div>
+            <div class="helper-value">${escapeHtml(safe(driveState.root_folder_name) || 'CRM root not linked')}</div>
+            <div class="helper-note">${driveState.root_folder_url
+              ? `<a href="${escapeHtml(driveState.root_folder_url)}" target="_blank" rel="noreferrer">Open Google Drive folder</a>`
+              : escapeHtml(safe(driveState.root_folder_id) || 'Waiting for configuration')
+            }</div>
+          </div>
+
+          <div class="helper-card">
+            <div class="helper-label">Storage policy</div>
+            <div class="helper-value">Google Drive first</div>
+            <div class="helper-note">Supabase stores metadata, statuses, IDs and links. Files themselves live in Drive.</div>
+          </div>
+        </div>
       </div>
 
       <div class="action-bar">

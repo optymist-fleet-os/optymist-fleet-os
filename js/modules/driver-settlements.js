@@ -1,4 +1,5 @@
 import { db } from '../supabase.js';
+import { archiveSettlementImportReports } from '../google-drive.js';
 import {
   getInitialSettlementImportState,
   getInitialSettlementDraft,
@@ -1043,6 +1044,72 @@ export function createDriverSettlementsModule({
     };
   }
 
+  function importDocumentTypeForKind(kind) {
+    return safe(kind) === 'fuel'
+      ? 'fuel_report'
+      : ['uber', 'bolt', 'freenow'].includes(safe(kind))
+        ? 'platform_report'
+        : 'other';
+  }
+
+  async function upsertImportedReportDocumentMetadata(period, archiveResult) {
+    const archivedFiles = archiveResult?.files || [];
+
+    for (const file of archivedFiles) {
+      const title = safe(file.original_name) || safe(file.name);
+      const payload = {
+        entity_type: 'period',
+        entity_id: safe(period.id),
+        document_type: importDocumentTypeForKind(file.kind),
+        title,
+        status: 'archived',
+        storage_provider: 'google_drive',
+        drive_file_id: nullIfBlank(file.id),
+        drive_folder_id: nullIfBlank(file.folder_id || archiveResult.archive_folder_id),
+        file_url: nullIfBlank(file.web_view_link),
+        folder_url: nullIfBlank(file.folder_url || archiveResult.archive_folder_url),
+        mime_type: nullIfBlank(file.mime_type || 'text/csv'),
+        notes: nullIfBlank(`Archived from weekly settlement import (${humanize(file.kind || 'report')}) on ${safe(archiveResult.archived_at || isoNow()).slice(0, 16).replace('T', ' ')}`),
+        updated_at: isoNow()
+      };
+
+      const existingDocument = state.documents.find(document =>
+        safe(document.entity_type) === 'period' &&
+        String(document.entity_id) === String(period.id) &&
+        safe(document.document_type) === payload.document_type &&
+        safe(document.title) === title
+      );
+
+      if (existingDocument) {
+        const { error } = await db
+          .from('documents')
+          .update(payload)
+          .eq('id', existingDocument.id);
+        if (error) throw error;
+      } else {
+        const { error } = await db.from('documents').insert([payload]);
+        if (error) throw error;
+      }
+    }
+  }
+
+  async function archiveImportedReportsToDrive(periodId, files, sourceReports) {
+    const period = state.periods.find(item => String(item.id) === String(periodId));
+    if (!period) {
+      throw new Error('Settlement period not found for Google Drive archive.');
+    }
+
+    const archiveResult = await archiveSettlementImportReports({
+      period,
+      files,
+      sourceReports
+    });
+
+    await upsertImportedReportDocumentMetadata(period, archiveResult);
+
+    return archiveResult;
+  }
+
   function clearSettlementImport(keepPeriod = true) {
     state.settlementImport = getInitialSettlementImportState({
       period_id: keepPeriod ? safe(state.settlementImport.period_id) : ''
@@ -1168,6 +1235,7 @@ export function createDriverSettlementsModule({
   function renderSettlementImportCard() {
     const importState = state.settlementImport || getInitialSettlementImportState();
     const matchedRows = importState.rows.filter(row => row.matched_driver_id);
+    const driveState = state.googleDrive || {};
 
     return `
       <div class="form-card">
@@ -1201,11 +1269,28 @@ export function createDriverSettlementsModule({
         </div>
 
         <div class="helper-text">
-          Files stay in the browser. Supported now: Uber CSV, Bolt CSV, FreeNow-style generic CSV, fuel CSV by driver. Imported data pre-fills snapshot fields for weekly settlements.
+          CSV files are parsed in the browser. When Google Drive is connected, the original reports are also archived through a server-side Vercel API into your Drive root folder.
         </div>
 
         ${importState.last_imported_at ? `
           <div class="helper-grid">
+            <div class="helper-card">
+              <div class="helper-label">Google Drive</div>
+              <div class="helper-value">${escapeHtml(
+                driveState.connected
+                  ? 'Connected'
+                  : driveState.configured
+                    ? 'Configured, access failed'
+                    : 'Not configured'
+              )}</div>
+              <div class="helper-note">${escapeHtml(
+                driveState.connected
+                  ? safe(driveState.root_folder_name) || 'Drive root verified'
+                  : safe(driveState.error) || (Array.isArray(driveState.missing) && driveState.missing.length
+                    ? `Missing: ${driveState.missing.join(', ')}`
+                    : 'Set env vars and share the target folder to the service account.')
+              )}</div>
+            </div>
             <div class="helper-card">
               <div class="helper-label">Imported files</div>
               <div class="helper-value">${importState.source_reports.length}</div>
@@ -1225,6 +1310,14 @@ export function createDriverSettlementsModule({
               <div class="helper-label">Imported at</div>
               <div class="helper-value">${escapeHtml(importState.last_imported_at.slice(0, 16).replace('T', ' '))}</div>
               <div class="helper-note">Client-side parse</div>
+            </div>
+            <div class="helper-card">
+              <div class="helper-label">Drive archive</div>
+              <div class="helper-value">${escapeHtml(humanize(importState.drive_archive_status || 'idle'))}</div>
+              <div class="helper-note">${importState.drive_archive_folder_url
+                ? `<a href="${escapeHtml(importState.drive_archive_folder_url)}" target="_blank" rel="noreferrer">Open archive folder</a>`
+                : escapeHtml(importState.drive_archive_error || (driveState.connected ? 'Archive runs automatically after import.' : 'Waiting for Google Drive connection'))
+              }</div>
             </div>
           </div>
         ` : ''}
@@ -1662,8 +1755,58 @@ export function createDriverSettlementsModule({
 
     try {
       state.settlementImport = await parseSettlementImportSources(files, periodId);
+
+      if (state.googleDrive?.connected) {
+        try {
+          const archiveResult = await archiveImportedReportsToDrive(
+            periodId,
+            files,
+            state.settlementImport.source_reports
+          );
+
+          state.settlementImport = {
+            ...state.settlementImport,
+            drive_archive_status: 'archived',
+            drive_archive_folder_id: safe(archiveResult.archive_folder_id),
+            drive_archive_folder_url: safe(archiveResult.archive_folder_url),
+            drive_archived_files: archiveResult.files || [],
+            drive_archive_error: '',
+            drive_archive_last_at: safe(archiveResult.archived_at)
+          };
+
+          await loadAllData();
+          showMsg(
+            el.appMsg,
+            `Imported ${files.length} CSV file(s) and archived ${archiveResult.files?.length || 0} report(s) to Google Drive.`,
+            'success'
+          );
+        } catch (archiveError) {
+          state.settlementImport = {
+            ...state.settlementImport,
+            drive_archive_status: 'failed',
+            drive_archive_error: archiveError.message || 'Google Drive archive failed.',
+            drive_archive_last_at: isoNow()
+          };
+          showMsg(
+            el.appMsg,
+            `Imported ${files.length} CSV file(s), but Drive archive failed: ${archiveError.message || 'Unknown error.'}`,
+            'error'
+          );
+        }
+      } else {
+        state.settlementImport = {
+          ...state.settlementImport,
+          drive_archive_status: 'skipped',
+          drive_archive_error: safe(state.googleDrive?.error) || 'Google Drive is not configured yet.'
+        };
+        showMsg(
+          el.appMsg,
+          `Imported ${files.length} CSV file(s). Google Drive archive is not connected yet.`,
+          'success'
+        );
+      }
+
       renderAll();
-      showMsg(el.appMsg, `Imported ${files.length} CSV file(s).`, 'success');
     } catch (error) {
       state.settlementImport = {
         ...getInitialSettlementImportState({ period_id: periodId }),
