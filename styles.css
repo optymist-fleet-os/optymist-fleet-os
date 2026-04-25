@@ -297,6 +297,36 @@ tbody tr.table-row-clickable.selected {
   background: #eef4ff;
 }
 
+.table-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.table-stack-item {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e5ebf3;
+}
+
+.table-stack-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.table-stack-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.table-stack-subtitle,
+.details-subvalue {
+  margin-top: 4px;
+  color: #6b7a90;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .filters {
   display: grid;
   grid-template-columns: 1fr 220px 220px;

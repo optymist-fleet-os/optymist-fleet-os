@@ -31,7 +31,10 @@ const state = {
     ownerSearch: '',
     settlementSearch: '',
     settlementPeriod: 'all',
-    settlementStatus: 'all'
+    settlementStatus: 'all',
+    ownerSettlementSearch: '',
+    ownerSettlementPeriod: 'all',
+    ownerSettlementStatus: 'all'
   },
   forms: {
     driver: false,
@@ -128,7 +131,7 @@ function badgeClass(status) {
   const s = safe(status).toLowerCase();
   if (['active', 'ready', 'approved', 'calculated', 'paid', 'sent', 'signed'].includes(s)) return 'active';
   if (['closed', 'archived', 'inactive'].includes(s)) return 'closed';
-  if (['open', 'draft', 'pending', 'missing'].includes(s)) return 'ready';
+  if (['open', 'draft', 'pending', 'missing', 'imported'].includes(s)) return 'ready';
   return '';
 }
 
@@ -140,6 +143,56 @@ function periodLabel(period) {
 function settlementPeriodLabel(settlement, periodsMap) {
   const period = periodsMap[String(settlement.period_id)];
   return periodLabel(period);
+}
+
+function dateRangeOverlaps(startA, endA, startB, endB) {
+  const fromA = safe(startA);
+  const toA = safe(endA) || '9999-12-31';
+  const fromB = safe(startB);
+  const toB = safe(endB) || '9999-12-31';
+
+  if (!fromA || !fromB) return false;
+  return fromA <= toB && fromB <= toA;
+}
+
+function rangeOverlapDays(startA, endA, startB, endB) {
+  if (!dateRangeOverlaps(startA, endA, startB, endB)) return 0;
+
+  const fromA = safe(startA);
+  const toA = safe(endA) || '9999-12-31';
+  const fromB = safe(startB);
+  const toB = safe(endB) || '9999-12-31';
+  const overlapFrom = fromA > fromB ? fromA : fromB;
+  const overlapTo = toA < toB ? toA : toB;
+  const startDate = new Date(`${overlapFrom}T00:00:00`);
+  const endDate = new Date(`${overlapTo}T00:00:00`);
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return 0;
+  return Math.max(0, Math.floor((endDate - startDate) / 86400000) + 1);
+}
+
+function summarizeStatuses(statuses, fallback = 'draft') {
+  const normalized = (statuses || [])
+    .map(status => safe(status).toLowerCase())
+    .filter(Boolean);
+
+  if (!normalized.length) return safe(fallback) || 'draft';
+  if (normalized.every(status => status === 'paid')) return 'paid';
+  if (normalized.every(status => ['paid', 'sent'].includes(status))) {
+    return normalized.includes('sent') ? 'sent' : 'paid';
+  }
+  if (normalized.every(status => status === 'closed')) return 'closed';
+
+  const priority = ['sent', 'approved', 'calculated', 'closed', 'imported', 'draft', 'open', 'pending'];
+  for (const status of priority) {
+    if (normalized.includes(status)) return status;
+  }
+
+  return normalized[0];
+}
+
+function ownerSettlementDocKey(ownerSettlement) {
+  return `owner-settlement:${safe(ownerSettlement.period_id)}:${safe(ownerSettlement.owner_id)}`;
 }
 
 function isStaff() {
@@ -188,6 +241,202 @@ function getCurrentAssignmentForVehicle(vehicleId) {
         (!a.assigned_to || safe(a.assigned_to) > today)
     ) || null
   );
+}
+
+function findBestAssignmentForSettlement(settlement, periodsMap) {
+  const driverId = safe(settlement.driver_id);
+  const period = periodsMap[String(settlement.period_id)];
+
+  if (!driverId || !period) return null;
+
+  const matches = state.assignments
+    .filter(assignment =>
+      String(assignment.driver_id) === driverId &&
+      dateRangeOverlaps(
+        assignment.assigned_from,
+        assignment.assigned_to,
+        period.date_from,
+        period.date_to
+      )
+    )
+    .sort((a, b) => {
+      const overlapDiff =
+        rangeOverlapDays(b.assigned_from, b.assigned_to, period.date_from, period.date_to) -
+        rangeOverlapDays(a.assigned_from, a.assigned_to, period.date_from, period.date_to);
+
+      if (overlapDiff) return overlapDiff;
+      return safe(b.assigned_from).localeCompare(safe(a.assigned_from));
+    });
+
+  return matches[0] || null;
+}
+
+function resolveSettlementVehicleContext(settlement, periodsMap, vehiclesMap) {
+  const directVehicle = vehiclesMap[String(settlement.vehicle_id)];
+  if (directVehicle) {
+    return {
+      vehicle: directVehicle,
+      assignment: null,
+      source: 'settlement'
+    };
+  }
+
+  const assignment = findBestAssignmentForSettlement(settlement, periodsMap);
+  const assignmentVehicle = assignment ? vehiclesMap[String(assignment.vehicle_id)] : null;
+
+  if (assignmentVehicle) {
+    return {
+      vehicle: assignmentVehicle,
+      assignment,
+      source: 'assignment'
+    };
+  }
+
+  return {
+    vehicle: null,
+    assignment: null,
+    source: 'unresolved'
+  };
+}
+
+function buildOwnerSettlementRows() {
+  const ownersMap = mapById(state.owners);
+  const vehiclesMap = mapById(state.vehicles);
+  const driversMap = mapById(state.drivers);
+  const periodsMap = mapById(state.periods);
+  const groups = {};
+  let unresolvedCount = 0;
+
+  // Owner payout is derived from driver rent totals until dedicated owner-settlement generation is added.
+  state.settlements.forEach(settlement => {
+    const period = periodsMap[String(settlement.period_id)];
+    if (!period) return;
+
+    const vehicleContext = resolveSettlementVehicleContext(settlement, periodsMap, vehiclesMap);
+    const vehicle = vehicleContext.vehicle;
+    const owner = vehicle ? ownersMap[String(vehicle.owner_id)] : null;
+
+    if (!vehicle || !owner) {
+      unresolvedCount += 1;
+      return;
+    }
+
+    const groupId = `${period.id}::${owner.id}`;
+    if (!groups[groupId]) {
+      groups[groupId] = {
+        id: groupId,
+        owner_id: String(owner.id),
+        period_id: String(period.id),
+        owner,
+        period,
+        owner_payout_total: 0,
+        settlement_count: 0,
+        assignment_resolved_count: 0,
+        settlement_ids: [],
+        status_list: [],
+        driver_ids: new Set(),
+        driver_names: new Set(),
+        vehicles: [],
+        vehicle_map: {}
+      };
+    }
+
+    const group = groups[groupId];
+    const payout = num(settlement.rent_total);
+    const driver = driversMap[String(settlement.driver_id)];
+
+    group.owner_payout_total += payout;
+    group.settlement_count += 1;
+    group.settlement_ids.push(String(settlement.id));
+    if (safe(settlement.status)) group.status_list.push(safe(settlement.status));
+    if (vehicleContext.source === 'assignment') group.assignment_resolved_count += 1;
+
+    if (driver) {
+      group.driver_ids.add(String(driver.id));
+      group.driver_names.add(fullName(driver));
+    }
+
+    const vehicleKey = String(vehicle.id);
+    if (!group.vehicle_map[vehicleKey]) {
+      const vehicleEntry = {
+        vehicle_id: vehicleKey,
+        vehicle,
+        owner_payout_total: 0,
+        settlement_count: 0,
+        assignment_resolved_count: 0,
+        settlement_ids: [],
+        status_list: [],
+        driver_ids: new Set(),
+        driver_names: new Set()
+      };
+
+      group.vehicle_map[vehicleKey] = vehicleEntry;
+      group.vehicles.push(vehicleEntry);
+    }
+
+    const vehicleEntry = group.vehicle_map[vehicleKey];
+    vehicleEntry.owner_payout_total += payout;
+    vehicleEntry.settlement_count += 1;
+    vehicleEntry.settlement_ids.push(String(settlement.id));
+    if (safe(settlement.status)) vehicleEntry.status_list.push(safe(settlement.status));
+    if (vehicleContext.source === 'assignment') vehicleEntry.assignment_resolved_count += 1;
+
+    if (driver) {
+      vehicleEntry.driver_ids.add(String(driver.id));
+      vehicleEntry.driver_names.add(fullName(driver));
+    }
+  });
+
+  const rows = Object.values(groups)
+    .map(group => {
+      const vehicles = group.vehicles
+        .map(vehicleEntry => ({
+          vehicle_id: vehicleEntry.vehicle_id,
+          vehicle: vehicleEntry.vehicle,
+          owner_payout_total: vehicleEntry.owner_payout_total,
+          settlement_count: vehicleEntry.settlement_count,
+          assignment_resolved_count: vehicleEntry.assignment_resolved_count,
+          settlement_ids: vehicleEntry.settlement_ids,
+          driver_ids: Array.from(vehicleEntry.driver_ids),
+          driver_names: Array.from(vehicleEntry.driver_names).sort((a, b) => a.localeCompare(b, 'uk')),
+          status: summarizeStatuses(vehicleEntry.status_list, safe(group.period?.status) || 'draft')
+        }))
+        .sort((a, b) => {
+          const payoutDiff = num(b.owner_payout_total) - num(a.owner_payout_total);
+          if (payoutDiff) return payoutDiff;
+          return vehicleLabel(a.vehicle).localeCompare(vehicleLabel(b.vehicle), 'uk');
+        });
+
+      const row = {
+        id: group.id,
+        owner_id: group.owner_id,
+        period_id: group.period_id,
+        owner: group.owner,
+        period: group.period,
+        owner_payout_total: group.owner_payout_total,
+        settlement_count: group.settlement_count,
+        assignment_resolved_count: group.assignment_resolved_count,
+        settlement_ids: group.settlement_ids,
+        driver_count: group.driver_ids.size,
+        driver_names: Array.from(group.driver_names).sort((a, b) => a.localeCompare(b, 'uk')),
+        vehicle_count: vehicles.length,
+        vehicles,
+        status: summarizeStatuses(group.status_list, safe(group.period?.status) || 'draft')
+      };
+
+      row.document_key = ownerSettlementDocKey(row);
+      row.suggested_document_name =
+        `owner-settlement-${safe(row.period?.date_from)}-${safe(row.period?.date_to)}-${safe(row.owner_id).slice(0, 8)}.pdf`;
+
+      return row;
+    })
+    .sort((a, b) => {
+      const periodDiff = safe(b.period?.date_from).localeCompare(safe(a.period?.date_from));
+      if (periodDiff) return periodDiff;
+      return ownerLabel(a.owner).localeCompare(ownerLabel(b.owner), 'uk');
+    });
+
+  return { rows, unresolvedCount };
 }
 
 function nullIfBlank(v) {
@@ -651,6 +900,7 @@ function collectElements() {
   el.driversPage = qs('page-drivers');
   el.vehiclesPage = qs('page-vehicles');
   el.ownersPage = qs('page-owners');
+  el.ownerSettlementsPage = qs('page-owner-settlements');
   el.settlementsPage = qs('page-settlements');
   el.detailsPanel = qs('detailsPanel');
   el.detailsKicker = qs('detailsKicker');
@@ -683,6 +933,7 @@ function setPage(page) {
     drivers: el.driversPage,
     vehicles: el.vehiclesPage,
     owners: el.ownersPage,
+    'owner-settlements': el.ownerSettlementsPage,
     settlements: el.settlementsPage
   };
 
@@ -712,6 +963,10 @@ function setPage(page) {
     if (page === 'owners') {
       el.pageTitle.textContent = 'Власники';
       el.pageSubtitle.textContent = 'Список власників авто';
+    }
+    if (page === 'owner-settlements') {
+      el.pageTitle.textContent = 'Owner settlements';
+      el.pageSubtitle.textContent = 'Виплати власникам по періодах та авто';
     }
     if (page === 'settlements') {
       el.pageTitle.textContent = 'Розрахунки';
@@ -886,6 +1141,7 @@ function renderAll() {
     renderDriversPage();
     renderVehiclesPage();
     renderOwnersPage();
+    renderOwnerSettlementsPage();
     renderSettlementsPage();
     renderDetailsPanel();
   } catch (e) {
@@ -1387,6 +1643,165 @@ function renderOwnersPage() {
   bindDetailRowClicks();
 }
 
+function renderOwnerSettlementVehicleCell(vehicles) {
+  return `
+    <div class="table-stack">
+      ${vehicles.map(vehicleRow => `
+        <div class="table-stack-item">
+          <div class="table-stack-row">
+            <strong>${escapeHtml(vehicleLabel(vehicleRow.vehicle))}</strong>
+            <strong>${money(vehicleRow.owner_payout_total)}</strong>
+          </div>
+          <div class="table-stack-subtitle">
+            ${escapeHtml(vehicleRow.driver_names.length ? vehicleRow.driver_names.join(', ') : 'без водія')}
+            ${vehicleRow.assignment_resolved_count ? ` · assignment fallback: ${vehicleRow.assignment_resolved_count}` : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderOwnerSettlementsPage() {
+  if (!el.ownerSettlementsPage) return;
+
+  const ownerSettlements = buildOwnerSettlementRows();
+  const periodOptions = state.periods.map(period => ({
+    value: String(period.id),
+    label: periodLabel(period)
+  }));
+
+  const q = safe(state.filters.ownerSettlementSearch).toLowerCase();
+  const periodFilter = safe(state.filters.ownerSettlementPeriod);
+  const statusFilter = safe(state.filters.ownerSettlementStatus).toLowerCase();
+
+  const rows = ownerSettlements.rows.filter(row => {
+    const blob = [
+      ownerLabel(row.owner),
+      safe(row.owner?.email),
+      safe(row.owner?.bank_account),
+      periodLabel(row.period),
+      row.driver_names.join(' '),
+      row.vehicles.map(vehicleRow => vehicleLabel(vehicleRow.vehicle)).join(' '),
+      safe(row.status)
+    ].join(' ').toLowerCase();
+
+    const periodOk = periodFilter === 'all' || String(row.period_id) === periodFilter;
+    const statusOk = statusFilter === 'all' || safe(row.status).toLowerCase() === statusFilter;
+    const searchOk = !q || blob.includes(q);
+
+    return periodOk && statusOk && searchOk;
+  });
+
+  const totalPayout = rows.reduce((sum, row) => sum + num(row.owner_payout_total), 0);
+  const ownersCount = new Set(rows.map(row => String(row.owner_id))).size;
+
+  el.ownerSettlementsPage.innerHTML = `
+    <div class="cards">
+      <div class="card"><div class="metric-label">Owner payout total</div><div class="metric-value">${money(totalPayout)}</div></div>
+      <div class="card"><div class="metric-label">Owner settlement rows</div><div class="metric-value">${rows.length}</div></div>
+      <div class="card"><div class="metric-label">Owners with payout</div><div class="metric-value">${ownersCount}</div></div>
+      <div class="card"><div class="metric-label">Need mapping review</div><div class="metric-value">${ownerSettlements.unresolvedCount}</div></div>
+    </div>
+
+    <div class="card">
+      <div class="action-bar">
+        <div class="muted">Owner payouts by settlement period, grouped by owner</div>
+      </div>
+
+      <div class="helper-text">
+        Owner payout is currently derived from <strong>driver_settlements.rent_total</strong>.
+        Vehicle mapping falls back to assignment history when a settlement row has no linked vehicle.
+      </div>
+
+      <div class="filters" style="margin-top:12px;">
+        <input id="ownerSettlementsSearch" placeholder="Пошук по власнику, авто, водію, IBAN..." value="${escapeHtml(safe(state.filters.ownerSettlementSearch))}" />
+        <select id="ownerSettlementsPeriod">
+          <option value="all">Усі періоди</option>
+          ${periodOptions.map(option => `
+            <option value="${escapeHtml(option.value)}" ${option.value === state.filters.ownerSettlementPeriod ? 'selected' : ''}>
+              ${escapeHtml(option.label)}
+            </option>
+          `).join('')}
+        </select>
+        <select id="ownerSettlementsStatus">
+          <option value="all">Усі статуси</option>
+          <option value="draft" ${state.filters.ownerSettlementStatus === 'draft' ? 'selected' : ''}>DRAFT</option>
+          <option value="calculated" ${state.filters.ownerSettlementStatus === 'calculated' ? 'selected' : ''}>CALCULATED</option>
+          <option value="approved" ${state.filters.ownerSettlementStatus === 'approved' ? 'selected' : ''}>APPROVED</option>
+          <option value="sent" ${state.filters.ownerSettlementStatus === 'sent' ? 'selected' : ''}>SENT</option>
+          <option value="paid" ${state.filters.ownerSettlementStatus === 'paid' ? 'selected' : ''}>PAID</option>
+          <option value="closed" ${state.filters.ownerSettlementStatus === 'closed' ? 'selected' : ''}>CLOSED</option>
+        </select>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Період</th>
+              <th>Власник</th>
+              <th>Авто / payout</th>
+              <th>Водії</th>
+              <th>Сума до виплати</th>
+              <th>Статус</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              rows.length
+                ? rows.map(row => `
+                  <tr class="table-row-clickable ${state.selectedDetails?.type === 'owner-settlement' && String(state.selectedDetails.id) === String(row.id) ? 'selected' : ''}" data-detail-type="owner-settlement" data-detail-id="${escapeHtml(row.id)}">
+                    <td><strong>${escapeHtml(periodLabel(row.period))}</strong></td>
+                    <td>
+                      <strong>${escapeHtml(ownerLabel(row.owner))}</strong><br>
+                      <span class="muted">${escapeHtml(safe(row.owner?.bank_account) || safe(row.owner?.email) || '-')}</span>
+                    </td>
+                    <td>${renderOwnerSettlementVehicleCell(row.vehicles)}</td>
+                    <td>${escapeHtml(row.driver_names.length ? row.driver_names.join(', ') : '-')}</td>
+                    <td>
+                      <strong>${money(row.owner_payout_total)}</strong><br>
+                      <span class="muted small">${row.vehicle_count} авто · ${row.settlement_count} settlements</span>
+                    </td>
+                    <td><span class="badge ${badgeClass(row.status)}">${escapeHtml(safe(row.status) || '-')}</span></td>
+                  </tr>
+                `).join('')
+                : `<tr><td colspan="6" class="empty">Немає owner settlements для поточних фільтрів</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  const search = qs('ownerSettlementsSearch');
+  const periodSelect = qs('ownerSettlementsPeriod');
+  const statusSelect = qs('ownerSettlementsStatus');
+
+  if (search) {
+    search.addEventListener('input', event => {
+      state.filters.ownerSettlementSearch = event.target.value;
+      renderOwnerSettlementsPage();
+    });
+  }
+
+  if (periodSelect) {
+    periodSelect.addEventListener('change', event => {
+      state.filters.ownerSettlementPeriod = event.target.value;
+      renderOwnerSettlementsPage();
+    });
+  }
+
+  if (statusSelect) {
+    statusSelect.addEventListener('change', event => {
+      state.filters.ownerSettlementStatus = event.target.value;
+      renderOwnerSettlementsPage();
+    });
+  }
+
+  bindDetailRowClicks();
+}
+
 function renderSettlementsPage() {
   if (!el.settlementsPage) return;
 
@@ -1736,6 +2151,79 @@ function renderDetailsPanel() {
               `).join('')
               : `<div class="empty">Немає авто</div>`
           }
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if (state.selectedDetails.type === 'owner-settlement') {
+    const ownerSettlement = buildOwnerSettlementRows().rows.find(
+      row => String(row.id) === String(state.selectedDetails.id)
+    );
+
+    if (!ownerSettlement) {
+      el.detailsPanel.classList.add('hidden');
+      return;
+    }
+
+    const doc = state.documents.find(
+      item =>
+        String(item.entity_id) === String(ownerSettlement.document_key) &&
+        safe(item.document_type) === 'owner_settlement_pdf'
+    );
+
+    el.detailsKicker.textContent = 'Owner settlement';
+    el.detailsTitle.textContent = `${ownerLabel(ownerSettlement.owner)} · ${periodLabel(ownerSettlement.period)}`;
+    el.detailsBody.innerHTML = `
+      <div class="details-section">
+        <h4>Контекст</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Власник</div><div class="details-value">${escapeHtml(ownerLabel(ownerSettlement.owner))}</div></div>
+          <div class="details-item"><div class="details-label">Період</div><div class="details-value">${escapeHtml(periodLabel(ownerSettlement.period))}</div></div>
+          <div class="details-item"><div class="details-label">Рахунок</div><div class="details-value">${escapeHtml(safe(ownerSettlement.owner?.bank_account) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Умови</div><div class="details-value">${escapeHtml(safe(ownerSettlement.owner?.settlement_terms) || '-')}</div></div>
+          <div class="details-item"><div class="details-label">Статус</div><div class="details-value">${escapeHtml(safe(ownerSettlement.status) || '-')}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Фінанси</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Сума до виплати</div><div class="details-value">${money(ownerSettlement.owner_payout_total)}</div></div>
+          <div class="details-item"><div class="details-label">Авто</div><div class="details-value">${ownerSettlement.vehicle_count}</div></div>
+          <div class="details-item"><div class="details-label">Водії</div><div class="details-value">${ownerSettlement.driver_count}</div></div>
+          <div class="details-item"><div class="details-label">Settlements</div><div class="details-value">${ownerSettlement.settlement_count}</div></div>
+          <div class="details-item"><div class="details-label">Assignment fallback</div><div class="details-value">${ownerSettlement.assignment_resolved_count}</div></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Авто</h4>
+        <div class="details-list">
+          ${
+            ownerSettlement.vehicles.length
+              ? ownerSettlement.vehicles.map(vehicleRow => `
+                <div class="details-item">
+                  <div class="details-label">${escapeHtml(vehicleLabel(vehicleRow.vehicle))}</div>
+                  <div class="details-value">
+                    ${money(vehicleRow.owner_payout_total)}
+                    <div class="details-subvalue">${escapeHtml(vehicleRow.driver_names.length ? vehicleRow.driver_names.join(', ') : 'без водія')}</div>
+                    <div class="details-subvalue">${vehicleRow.settlement_count} settlements${vehicleRow.assignment_resolved_count ? ` · assignment fallback: ${vehicleRow.assignment_resolved_count}` : ''}</div>
+                  </div>
+                </div>
+              `).join('')
+              : `<div class="empty">Немає авто</div>`
+          }
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h4>Документ</h4>
+        <div class="details-list">
+          <div class="details-item"><div class="details-label">Document key</div><div class="details-value">${escapeHtml(ownerSettlement.document_key)}</div></div>
+          <div class="details-item"><div class="details-label">Suggested file</div><div class="details-value">${escapeHtml(ownerSettlement.suggested_document_name)}</div></div>
+          <div class="details-item"><div class="details-label">Storage</div><div class="details-value">${doc ? escapeHtml(safe(doc.file_url) || 'metadata only') : 'Google Drive layer later'}</div></div>
         </div>
       </div>
     `;
