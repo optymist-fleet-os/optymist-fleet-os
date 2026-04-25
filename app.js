@@ -7,7 +7,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: true
+    detectSessionInUrl: false,
+    storageKey: 'optymist-fleet-os-auth-v2'
   }
 });
 
@@ -41,11 +42,7 @@ const state = {
 };
 
 const el = {};
-let authSubscription = null;
 let isLoadingData = false;
-
-const AUTH_STORAGE_KEY = 'sb-tegravrxaqcuktwjanzm-auth-token';
-let authHydrating = false;
 
 function safe(v) {
   return v == null ? '' : String(v).trim();
@@ -80,68 +77,6 @@ function showMsg(target, text, type = 'error') {
 function clearMsg(target) {
   if (!target) return;
   target.innerHTML = '';
-}
-
-function isAuthStorageBroken() {
-  try {
-    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
-    if (!raw) return false;
-    const parsed = JSON.parse(raw);
-    return !parsed || typeof parsed !== 'object';
-  } catch {
-    return true;
-  }
-}
-
-async function resetBrokenSession(reason = '') {
-  try {
-    await db.auth.signOut({ scope: 'local' });
-  } catch (_) {}
-
-  try {
-    localStorage.removeItem(AUTH_STORAGE_KEY);
-  } catch (_) {}
-
-  try {
-    sessionStorage.removeItem(AUTH_STORAGE_KEY);
-  } catch (_) {}
-
-  state.session = null;
-  state.profile = null;
-  state.roles = [];
-  state.selectedDetails = null;
-
-  renderAppShell(false);
-
-  if (reason) {
-    showMsg(el.msg, `Сесію очищено. Увійди ще раз. ${reason}`, 'error');
-  }
-}
-
-async function applySession(session) {
-  state.session = session || null;
-
-  if (!session) {
-    state.profile = null;
-    state.roles = [];
-    renderAppShell(false);
-    return;
-  }
-
-  await loadProfileAndRoles(session.user.id);
-
-  if (!isStaff()) {
-    await resetBrokenSession('У цього акаунта немає ролі admin/operator');
-    return;
-  }
-
-  renderAppShell(true);
-
-  if (el.userEmail) {
-    el.userEmail.textContent = state.profile?.email || session.user?.email || '';
-  }
-
-  await loadAllData();
 }
 
 function qs(id) {
@@ -429,6 +364,51 @@ async function onCreatePeriodSubmit(event) {
   }
 }
 
+async function loadProfileAndRoles(userId) {
+  const [profileRes, rolesRes] = await Promise.all([
+    db.from('profiles').select('*').eq('id', userId).maybeSingle(),
+    db.from('user_roles').select('role').eq('user_id', userId)
+  ]);
+
+  if (profileRes.error) throw profileRes.error;
+  if (rolesRes.error) throw rolesRes.error;
+
+  state.profile = profileRes.data || null;
+  state.roles = (rolesRes.data || []).map(r => r.role);
+}
+
+async function applySession(session) {
+  state.session = session || null;
+
+  if (!session) {
+    state.profile = null;
+    state.roles = [];
+    state.selectedDetails = null;
+    renderAppShell(false);
+    return;
+  }
+
+  await loadProfileAndRoles(session.user.id);
+
+  if (!isStaff()) {
+    await db.auth.signOut({ scope: 'local' });
+    state.session = null;
+    state.profile = null;
+    state.roles = [];
+    renderAppShell(false);
+    showMsg(el.msg, 'У цього акаунта немає ролі admin/operator');
+    return;
+  }
+
+  renderAppShell(true);
+
+  if (el.userEmail) {
+    el.userEmail.textContent = state.profile?.email || session.user?.email || '';
+  }
+
+  await loadAllData();
+}
+
 function collectElements() {
   el.authView = qs('authView');
   el.appView = qs('appView');
@@ -592,14 +572,6 @@ async function signOut() {
     console.error('signOut error:', e);
   }
 
-  try {
-    localStorage.removeItem(AUTH_STORAGE_KEY);
-  } catch (_) {}
-
-  try {
-    sessionStorage.removeItem(AUTH_STORAGE_KEY);
-  } catch (_) {}
-
   state.session = null;
   state.profile = null;
   state.roles = [];
@@ -610,43 +582,13 @@ async function signOut() {
   clearMsg(el.msg);
 }
 
-async function loadProfileAndRoles(userId) {
-  const [profileRes, rolesRes] = await Promise.all([
-    db.from('profiles').select('*').eq('id', userId).maybeSingle(),
-    db.from('user_roles').select('role').eq('user_id', userId)
-  ]);
-
-  if (profileRes.error) throw profileRes.error;
-  if (rolesRes.error) throw rolesRes.error;
-
-  state.profile = profileRes.data || null;
-  state.roles = (rolesRes.data || []).map(r => r.role);
-}
-
 async function loadSessionAndData() {
   clearMsg(el.appMsg);
 
   try {
-    if (isAuthStorageBroken()) {
-      await resetBrokenSession('Пошкоджений local auth cache.');
-      return;
-    }
-
     const { data, error } = await db.auth.getSession();
 
     if (error) {
-      const msg = safe(error.message).toLowerCase();
-
-      if (
-        msg.includes('refresh token') ||
-        msg.includes('invalid jwt') ||
-        msg.includes('jwt') ||
-        msg.includes('session')
-      ) {
-        await resetBrokenSession(error.message);
-        return;
-      }
-
       showMsg(el.msg, error.message || 'Помилка сесії');
       return;
     }
@@ -748,38 +690,14 @@ function renderDashboard() {
 
   el.dashboardPage.innerHTML = `
     <div class="cards">
-      <div class="card">
-        <div class="metric-label">Водії</div>
-        <div class="metric-value">${state.drivers.length}</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">Авто</div>
-        <div class="metric-value">${state.vehicles.length}</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">Власники</div>
-        <div class="metric-value">${state.owners.length}</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">Періоди</div>
-        <div class="metric-value">${state.periods.length}</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">Gross income</div>
-        <div class="metric-value">${money(grossIncomeTotal)}</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">Комісія компанії</div>
-        <div class="metric-value">${money(commissionTotal)}</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">До виплати водіям</div>
-        <div class="metric-value">${money(payoutTotal)}</div>
-      </div>
-      <div class="card">
-        <div class="metric-label">Борг / carry forward</div>
-        <div class="metric-value">${money(debtTotal)}</div>
-      </div>
+      <div class="card"><div class="metric-label">Водії</div><div class="metric-value">${state.drivers.length}</div></div>
+      <div class="card"><div class="metric-label">Авто</div><div class="metric-value">${state.vehicles.length}</div></div>
+      <div class="card"><div class="metric-label">Власники</div><div class="metric-value">${state.owners.length}</div></div>
+      <div class="card"><div class="metric-label">Періоди</div><div class="metric-value">${state.periods.length}</div></div>
+      <div class="card"><div class="metric-label">Gross income</div><div class="metric-value">${money(grossIncomeTotal)}</div></div>
+      <div class="card"><div class="metric-label">Комісія компанії</div><div class="metric-value">${money(commissionTotal)}</div></div>
+      <div class="card"><div class="metric-label">До виплати водіям</div><div class="metric-value">${money(payoutTotal)}</div></div>
+      <div class="card"><div class="metric-label">Борг / carry forward</div><div class="metric-value">${money(debtTotal)}</div></div>
     </div>
 
     <div class="layout-3">
@@ -806,38 +724,17 @@ function renderDashboard() {
 
       <div class="card">
         <h3 class="card-title">Статуси</h3>
-        <div class="row">
-          <div>Активні водії</div>
-          <div><strong>${state.drivers.filter(d => safe(d.status).toLowerCase() === 'active').length}</strong></div>
-        </div>
-        <div class="row">
-          <div>Активні авто</div>
-          <div><strong>${state.vehicles.filter(v => safe(v.status).toLowerCase() === 'active').length}</strong></div>
-        </div>
-        <div class="row">
-          <div>Розрахунки CALCULATED</div>
-          <div><strong>${settlements.filter(r => safe(r.status).toLowerCase() === 'calculated').length}</strong></div>
-        </div>
-        <div class="row">
-          <div>Розрахунки SENT</div>
-          <div><strong>${settlements.filter(r => safe(r.status).toLowerCase() === 'sent').length}</strong></div>
-        </div>
+        <div class="row"><div>Активні водії</div><div><strong>${state.drivers.filter(d => safe(d.status).toLowerCase() === 'active').length}</strong></div></div>
+        <div class="row"><div>Активні авто</div><div><strong>${state.vehicles.filter(v => safe(v.status).toLowerCase() === 'active').length}</strong></div></div>
+        <div class="row"><div>Розрахунки CALCULATED</div><div><strong>${settlements.filter(r => safe(r.status).toLowerCase() === 'calculated').length}</strong></div></div>
+        <div class="row"><div>Розрахунки SENT</div><div><strong>${settlements.filter(r => safe(r.status).toLowerCase() === 'sent').length}</strong></div></div>
       </div>
 
       <div class="card">
         <h3 class="card-title">Швидка перевірка</h3>
-        <div class="row">
-          <div>Документи settlement</div>
-          <div><strong>${settlementDocsCount}</strong></div>
-        </div>
-        <div class="row">
-          <div>Позитивний payout</div>
-          <div><strong>${settlements.filter(r => num(r.payout_to_driver) > 0).length}</strong></div>
-        </div>
-        <div class="row">
-          <div>Нульовий payout</div>
-          <div><strong>${settlements.filter(r => num(r.payout_to_driver) === 0).length}</strong></div>
-        </div>
+        <div class="row"><div>Документи settlement</div><div><strong>${settlementDocsCount}</strong></div></div>
+        <div class="row"><div>Позитивний payout</div><div><strong>${settlements.filter(r => num(r.payout_to_driver) > 0).length}</strong></div></div>
+        <div class="row"><div>Нульовий payout</div><div><strong>${settlements.filter(r => num(r.payout_to_driver) === 0).length}</strong></div></div>
       </div>
     </div>
   `;
@@ -857,7 +754,6 @@ function renderDriversPage() {
       safe(d.contract_status),
       safe(d.onboarding_stage)
     ].join(' ').toLowerCase();
-
     return !q || blob.includes(q);
   });
 
@@ -874,30 +770,12 @@ function renderDriversPage() {
             <h3 class="form-title">Новий водій</h3>
             <form id="driverCreateForm">
               <div class="form-grid">
-                <div class="form-field">
-                  <label>ПІБ *</label>
-                  <input name="full_name" required />
-                </div>
-                <div class="form-field">
-                  <label>Email</label>
-                  <input name="email" type="email" />
-                </div>
-                <div class="form-field">
-                  <label>Телефон</label>
-                  <input name="phone" />
-                </div>
-                <div class="form-field">
-                  <label>Паспорт</label>
-                  <input name="passport_number" />
-                </div>
-                <div class="form-field">
-                  <label>Номер прав</label>
-                  <input name="driver_license_number" />
-                </div>
-                <div class="form-field">
-                  <label>Дата старту</label>
-                  <input name="joined_at" type="date" />
-                </div>
+                <div class="form-field"><label>ПІБ *</label><input name="full_name" required /></div>
+                <div class="form-field"><label>Email</label><input name="email" type="email" /></div>
+                <div class="form-field"><label>Телефон</label><input name="phone" /></div>
+                <div class="form-field"><label>Паспорт</label><input name="passport_number" /></div>
+                <div class="form-field"><label>Номер прав</label><input name="driver_license_number" /></div>
+                <div class="form-field"><label>Дата старту</label><input name="joined_at" type="date" /></div>
                 <div class="form-field">
                   <label>Статус</label>
                   <select name="status">
@@ -1012,7 +890,6 @@ function renderVehiclesPage() {
       safe(v.model),
       safe(v.status)
     ].join(' ').toLowerCase();
-
     return !q || blob.includes(q);
   });
 
@@ -1033,31 +910,14 @@ function renderVehiclesPage() {
                   <label>Власник *</label>
                   <select name="owner_id" required>
                     <option value="">Вибери власника</option>
-                    ${state.owners.map(o => `
-                      <option value="${escapeHtml(o.id)}">${escapeHtml(ownerLabel(o))}</option>
-                    `).join('')}
+                    ${state.owners.map(o => `<option value="${escapeHtml(o.id)}">${escapeHtml(ownerLabel(o))}</option>`).join('')}
                   </select>
                 </div>
-                <div class="form-field">
-                  <label>Номер *</label>
-                  <input name="plate_number" required />
-                </div>
-                <div class="form-field">
-                  <label>VIN</label>
-                  <input name="vin" />
-                </div>
-                <div class="form-field">
-                  <label>Марка</label>
-                  <input name="brand" />
-                </div>
-                <div class="form-field">
-                  <label>Модель</label>
-                  <input name="model" />
-                </div>
-                <div class="form-field">
-                  <label>Рік</label>
-                  <input name="year" type="number" />
-                </div>
+                <div class="form-field"><label>Номер *</label><input name="plate_number" required /></div>
+                <div class="form-field"><label>VIN</label><input name="vin" /></div>
+                <div class="form-field"><label>Марка</label><input name="brand" /></div>
+                <div class="form-field"><label>Модель</label><input name="model" /></div>
+                <div class="form-field"><label>Рік</label><input name="year" type="number" /></div>
                 <div class="form-field">
                   <label>Пальне</label>
                   <select name="fuel_type">
@@ -1091,14 +951,8 @@ function renderVehiclesPage() {
               </div>
 
               <div class="form-grid-2" style="margin-top:12px;">
-                <div class="form-field">
-                  <label>Страховка до</label>
-                  <input name="insurance_expiry" type="date" />
-                </div>
-                <div class="form-field">
-                  <label>Огляд до</label>
-                  <input name="inspection_expiry" type="date" />
-                </div>
+                <div class="form-field"><label>Страховка до</label><input name="insurance_expiry" type="date" /></div>
+                <div class="form-field"><label>Огляд до</label><input name="inspection_expiry" type="date" /></div>
               </div>
 
               <div class="form-field" style="margin-top:12px;">
@@ -1184,7 +1038,6 @@ function renderOwnersPage() {
       safe(o.bank_account),
       safe(o.owner_type)
     ].join(' ').toLowerCase();
-
     return !q || blob.includes(q);
   });
 
@@ -1214,37 +1067,16 @@ function renderOwnersPage() {
                     <option value="person">person</option>
                   </select>
                 </div>
-                <div class="form-field">
-                  <label>Company name</label>
-                  <input name="company_name" />
-                </div>
-                <div class="form-field">
-                  <label>Full name</label>
-                  <input name="full_name" />
-                </div>
-                <div class="form-field">
-                  <label>Email</label>
-                  <input name="email" type="email" />
-                </div>
-                <div class="form-field">
-                  <label>Телефон</label>
-                  <input name="phone" />
-                </div>
-                <div class="form-field">
-                  <label>Рахунок</label>
-                  <input name="bank_account" />
-                </div>
+                <div class="form-field"><label>Company name</label><input name="company_name" /></div>
+                <div class="form-field"><label>Full name</label><input name="full_name" /></div>
+                <div class="form-field"><label>Email</label><input name="email" type="email" /></div>
+                <div class="form-field"><label>Телефон</label><input name="phone" /></div>
+                <div class="form-field"><label>Рахунок</label><input name="bank_account" /></div>
               </div>
 
               <div class="form-grid-2" style="margin-top:12px;">
-                <div class="form-field">
-                  <label>Умови виплат</label>
-                  <input name="settlement_terms" />
-                </div>
-                <div class="form-field">
-                  <label>Нотатки</label>
-                  <input name="notes" />
-                </div>
+                <div class="form-field"><label>Умови виплат</label><input name="settlement_terms" /></div>
+                <div class="form-field"><label>Нотатки</label><input name="notes" /></div>
               </div>
 
               <div class="helper-text">Для company заповни company name. Для person заповни full name.</div>
@@ -1366,14 +1198,8 @@ function renderSettlementsPage() {
                     <option value="monthly">monthly</option>
                   </select>
                 </div>
-                <div class="form-field">
-                  <label>Date from *</label>
-                  <input name="date_from" type="date" required />
-                </div>
-                <div class="form-field">
-                  <label>Date to *</label>
-                  <input name="date_to" type="date" required />
-                </div>
+                <div class="form-field"><label>Date from *</label><input name="date_from" type="date" required /></div>
+                <div class="form-field"><label>Date to *</label><input name="date_to" type="date" required /></div>
                 <div class="form-field">
                   <label>Статус</label>
                   <select name="status">
@@ -1402,7 +1228,6 @@ function renderSettlementsPage() {
 
       <div class="filters">
         <input id="settlementsSearch" placeholder="Пошук по водію, email, авто..." value="${escapeHtml(safe(state.filters.settlementSearch))}" />
-
         <select id="settlementsPeriod">
           <option value="all">Усі періоди</option>
           ${periodOptions.map(p => `
@@ -1411,7 +1236,6 @@ function renderSettlementsPage() {
             </option>
           `).join('')}
         </select>
-
         <select id="settlementsStatus">
           <option value="all">Усі статуси</option>
           <option value="draft" ${state.filters.settlementStatus === 'draft' ? 'selected' : ''}>DRAFT</option>
@@ -1738,44 +1562,9 @@ function bindEvents() {
   }
 }
 
-function subscribeAuth() {
-  if (authSubscription) return;
-
-  const sub = db.auth.onAuthStateChange(async (event, session) => {
-    if (authHydrating) return;
-
-    if (event === 'SIGNED_OUT') {
-      state.session = null;
-      state.profile = null;
-      state.roles = [];
-      state.selectedDetails = null;
-      renderAppShell(false);
-      return;
-    }
-
-    if (
-      event === 'INITIAL_SESSION' ||
-      event === 'SIGNED_IN' ||
-      event === 'TOKEN_REFRESHED'
-    ) {
-      authHydrating = true;
-      try {
-        await applySession(session || null);
-      } catch (e) {
-        console.error('auth state error:', e);
-      } finally {
-        authHydrating = false;
-      }
-    }
-  });
-
-  authSubscription = sub?.data?.subscription || null;
-}
-
 async function initApp() {
   collectElements();
   bindEvents();
-  subscribeAuth();
   setPage('dashboard');
   renderAll();
   await loadSessionAndData();
