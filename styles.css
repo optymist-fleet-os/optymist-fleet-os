@@ -400,6 +400,11 @@ button:hover {
   opacity: 0.95;
 }
 
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 button.secondary {
   background: #fff;
   color: var(--text);
@@ -599,6 +604,10 @@ button.secondary {
   border: 1px solid var(--border-soft);
   border-radius: 12px;
   background: #fff;
+}
+
+.import-preview-card {
+  margin-top: 16px;
 }
 
 .history-title {

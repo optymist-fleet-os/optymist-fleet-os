@@ -33,19 +33,33 @@ export function getInitialSettlementDraft(overrides = {}) {
     bonuses: '0',
     cash_collected: '0',
     commission_rate_snapshot: '',
-    company_commission: '0',
-    weekly_settlement_fee: '0',
+    company_commission: '',
+    weekly_settlement_fee: '',
     rent_total: '',
     fuel_total: '0',
     penalties_total: '0',
     adjustments_total: '0',
-    carry_forward_balance: '0',
+    carry_forward_balance: '',
     status: 'draft',
     calculation_notes: '',
     pdf_status: 'not_generated',
     pdf_url: '',
     drive_file_id: '',
     drive_folder_id: '',
+    ...overrides
+  };
+}
+
+export function getInitialSettlementImportState(overrides = {}) {
+  return {
+    period_id: '',
+    source_files: [],
+    source_reports: [],
+    rows: [],
+    unmatched_rows: [],
+    warnings: [],
+    last_error: '',
+    last_imported_at: '',
     ...overrides
   };
 }
@@ -142,6 +156,7 @@ export const state = {
   forms: getInitialFormsState(),
   assignmentDraft: getInitialAssignmentDraft(),
   settlementDraft: getInitialSettlementDraft(),
+  settlementImport: getInitialSettlementImportState(),
   documentDraft: getInitialDocumentDraft()
 };
 

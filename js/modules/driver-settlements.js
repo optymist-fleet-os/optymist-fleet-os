@@ -1,5 +1,6 @@
 import { db } from '../supabase.js';
 import {
+  getInitialSettlementImportState,
   getInitialSettlementDraft,
   state
 } from '../state.js';
@@ -195,13 +196,13 @@ export function createDriverSettlementsModule({
       bonuses: safe(formData.get('bonuses')) || '0',
       cash_collected: safe(formData.get('cash_collected')) || '0',
       commission_rate_snapshot: safe(formData.get('commission_rate_snapshot')),
-      company_commission: safe(formData.get('company_commission')) || '0',
-      weekly_settlement_fee: safe(formData.get('weekly_settlement_fee')) || '0',
+      company_commission: safe(formData.get('company_commission')),
+      weekly_settlement_fee: safe(formData.get('weekly_settlement_fee')),
       rent_total: safe(formData.get('rent_total')),
       fuel_total: safe(formData.get('fuel_total')) || '0',
       penalties_total: safe(formData.get('penalties_total')) || '0',
       adjustments_total: safe(formData.get('adjustments_total')) || '0',
-      carry_forward_balance: safe(formData.get('carry_forward_balance')) || '0',
+      carry_forward_balance: safe(formData.get('carry_forward_balance')),
       status: safe(formData.get('status')) || 'draft',
       calculation_notes: safe(formData.get('calculation_notes')),
       pdf_status: safe(formData.get('pdf_status')) || 'not_generated',
@@ -589,6 +590,743 @@ export function createDriverSettlementsModule({
     };
   }
 
+  function normalizeLookupText(value) {
+    return safe(value)
+      .replace(/\u00a0/g, ' ')
+      .replace(/[łŁ]/g, 'l')
+      .replace(/[ß]/g, 'ss')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[|:()[\]"]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  function parseAmount(value) {
+    let clean = safe(value)
+      .replace(/\u00a0/g, '')
+      .replace(/\s+/g, '')
+      .replace(/"/g, '');
+
+    if (!clean) return 0;
+
+    if (clean.includes(',') && clean.includes('.')) {
+      if (clean.lastIndexOf(',') > clean.lastIndexOf('.')) {
+        clean = clean.replace(/\./g, '').replace(',', '.');
+      } else {
+        clean = clean.replace(/,/g, '');
+      }
+    } else if (clean.includes(',')) {
+      clean = clean.replace(',', '.');
+    }
+
+    const parsed = Number(clean);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function parseCsvText(text) {
+    const rows = [];
+    const source = safe(text).replace(/^\ufeff/, '');
+    let current = '';
+    let row = [];
+    let inQuotes = false;
+
+    for (let index = 0; index < source.length; index += 1) {
+      const char = source[index];
+      const next = source[index + 1];
+
+      if (char === '"') {
+        if (inQuotes && next === '"') {
+          current += '"';
+          index += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+
+      if (char === ',' && !inQuotes) {
+        row.push(current);
+        current = '';
+        continue;
+      }
+
+      if ((char === '\n' || char === '\r') && !inQuotes) {
+        if (char === '\r' && next === '\n') {
+          index += 1;
+        }
+
+        row.push(current);
+        current = '';
+
+        if (row.some(cell => safe(cell))) {
+          rows.push(row);
+        }
+
+        row = [];
+        continue;
+      }
+
+      current += char;
+    }
+
+    if (current.length || row.length) {
+      row.push(current);
+      if (row.some(cell => safe(cell))) {
+        rows.push(row);
+      }
+    }
+
+    const headers = rows.shift() || [];
+    return {
+      headers,
+      rows: rows.map(columns => {
+        const record = {};
+        headers.forEach((header, columnIndex) => {
+          record[header] = columns[columnIndex] ?? '';
+        });
+        return record;
+      })
+    };
+  }
+
+  function getRowValue(row, candidates = []) {
+    const entries = Object.entries(row || {});
+
+    for (const candidate of candidates) {
+      const normalizedCandidate = normalizeLookupText(candidate);
+      const exactMatch = entries.find(([key]) => normalizeLookupText(key) === normalizedCandidate);
+      if (exactMatch && safe(exactMatch[1])) return exactMatch[1];
+    }
+
+    for (const candidate of candidates) {
+      const normalizedCandidate = normalizeLookupText(candidate);
+      const fuzzyMatch = entries.find(([key]) => normalizeLookupText(key).includes(normalizedCandidate));
+      if (fuzzyMatch && safe(fuzzyMatch[1])) return fuzzyMatch[1];
+    }
+
+    return '';
+  }
+
+  function getRowNumber(row, candidates = []) {
+    return parseAmount(getRowValue(row, candidates));
+  }
+
+  function getRowAbsNumber(row, candidates = []) {
+    return Math.abs(getRowNumber(row, candidates));
+  }
+
+  function detectReportKind(headers, fileName) {
+    const headerText = headers.map(header => normalizeLookupText(header)).join(' | ');
+    const fileText = normalizeLookupText(fileName);
+    const haystack = `${headerText} ${fileText}`;
+
+    if (haystack.includes('identyfikator uuid kierowcy') && haystack.includes('wyplacono ci')) {
+      return 'uber';
+    }
+    if (haystack.includes('zarobki brutto ogolem') && haystack.includes('przewidywana wyplata')) {
+      return 'bolt';
+    }
+    if (fileText.includes('freenow') || haystack.includes('free now') || haystack.includes('freenow')) {
+      return 'freenow';
+    }
+    if (
+      fileText.includes('fuel') ||
+      fileText.includes('paliw') ||
+      fileText.includes('tank') ||
+      haystack.includes('fuel') ||
+      haystack.includes('paliw')
+    ) {
+      return 'fuel';
+    }
+
+    return 'unknown';
+  }
+
+  function buildImportedDriverDescriptor(row, fallbacks = {}) {
+    const firstName = safe(getRowValue(row, ['imie kierowcy', 'imie', 'first name'])) || safe(fallbacks.first_name);
+    const lastName = safe(getRowValue(row, ['nazwisko kierowcy', 'nazwisko', 'last name'])) || safe(fallbacks.last_name);
+    const fullNameValue = safe(
+      getRowValue(row, ['kierowca', 'driver', 'driver name', 'pelne imie i nazwisko', 'full name']) ||
+      [firstName, lastName].filter(Boolean).join(' ') ||
+      fallbacks.full_name
+    );
+
+    return {
+      imported_name: fullNameValue,
+      imported_email: safe(getRowValue(row, ['adres e mail', 'email', 'e mail', 'mail']) || fallbacks.email),
+      imported_phone: safe(getRowValue(row, ['numer telefonu', 'telefon', 'phone']) || fallbacks.phone),
+      imported_external_id: safe(
+        getRowValue(row, [
+          'identyfikator uuid kierowcy',
+          'identyfikator kierowcy',
+          'id kierowcy',
+          'driver id',
+          'uuid'
+        ]) || fallbacks.external_id
+      )
+    };
+  }
+
+  function matchImportedDriver(importRow) {
+    const importedName = normalizeLookupText(importRow.imported_name);
+    const importedEmail = normalizeLookupText(importRow.imported_email);
+    const importedPhoneDigits = safe(importRow.imported_phone).replace(/\D/g, '');
+
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const driver of settlementDrivers()) {
+      let score = 0;
+      const driverName = normalizeLookupText(fullName(driver));
+      const driverEmail = normalizeLookupText(driver.email);
+      const driverPhoneDigits = safe(driver.phone).replace(/\D/g, '');
+
+      if (importedEmail && driverEmail && importedEmail === driverEmail) score += 6;
+      if (importedName && driverName && importedName === driverName) score += 5;
+      if (importedName && driverName && (driverName.includes(importedName) || importedName.includes(driverName))) score += 3;
+      if (importedPhoneDigits && driverPhoneDigits && importedPhoneDigits.slice(-7) === driverPhoneDigits.slice(-7)) score += 2;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = driver;
+      }
+    }
+
+    return bestScore >= 4 ? bestMatch : null;
+  }
+
+  function buildImportNote(provider, noteParts = []) {
+    return [`Imported from ${provider}`, ...noteParts.filter(Boolean)].join('. ');
+  }
+
+  function parseUberRows(rows, fileName) {
+    return rows.map(row => {
+      const descriptor = buildImportedDriverDescriptor(row);
+      const tips = getRowNumber(row, ['twoj przychod napiwek']);
+      const promotions = getRowNumber(row, ['promocja tryb korzysci']);
+      const providerNoteParts = [];
+
+      if (tips) providerNoteParts.push(`tips included in net: ${money(tips)}`);
+      if (promotions) providerNoteParts.push(`promotions included in net: ${money(promotions)}`);
+
+      return {
+        ...descriptor,
+        provider: 'uber',
+        source_file: fileName,
+        gross_platform_income: getRowNumber(row, [
+          'wypłacono ci : twój przychód : opłata',
+          'wyplacono ci twoj przychod oplata'
+        ]),
+        platform_net_income: getRowNumber(row, ['wypłacono ci : twój przychód', 'wyplacono ci twoj przychod']),
+        cash_collected: getRowAbsNumber(row, [
+          'odebrana gotowka',
+          'wypłaty odebrana gotówka'
+        ]),
+        bonuses: 0,
+        fuel_total: 0,
+        reported_driver_payout: getRowNumber(row, ['wypłacono ci', 'wyplacono ci']),
+        import_note: buildImportNote('Uber', providerNoteParts)
+      };
+    }).filter(row => row.imported_name && (row.gross_platform_income || row.platform_net_income || row.reported_driver_payout));
+  }
+
+  function parseBoltRows(rows, fileName) {
+    return rows.map(row => {
+      const descriptor = buildImportedDriverDescriptor(row);
+      const tips = getRowNumber(row, ['napiwki od pasazerow']);
+      const campaigns = getRowNumber(row, ['zarobki z kampanii']);
+      const providerNoteParts = [];
+
+      if (tips) providerNoteParts.push(`tips included in net: ${money(tips)}`);
+      if (campaigns) providerNoteParts.push(`campaign earnings included in net: ${money(campaigns)}`);
+
+      return {
+        ...descriptor,
+        provider: 'bolt',
+        source_file: fileName,
+        gross_platform_income: getRowNumber(row, ['zarobki brutto ogolem']),
+        platform_net_income: getRowNumber(row, ['zarobki netto']),
+        cash_collected: getRowAbsNumber(row, ['pobrana gotowka', 'zarobki brutto platnosci gotowkowe']),
+        bonuses: 0,
+        fuel_total: 0,
+        reported_driver_payout: getRowNumber(row, ['przewidywana wyplata']),
+        import_note: buildImportNote('Bolt', providerNoteParts)
+      };
+    }).filter(row => row.imported_name && (row.gross_platform_income || row.platform_net_income || row.reported_driver_payout));
+  }
+
+  function parseFreeNowRows(rows, fileName) {
+    return rows.map(row => {
+      const descriptor = buildImportedDriverDescriptor(row);
+      return {
+        ...descriptor,
+        provider: 'freenow',
+        source_file: fileName,
+        gross_platform_income: getRowNumber(row, ['gross earnings', 'gross income', 'brutto', 'gross']),
+        platform_net_income: getRowNumber(row, ['net earnings', 'net income', 'zarobki netto', 'net']),
+        cash_collected: getRowAbsNumber(row, ['cash collected', 'cash', 'gotowka', 'gotowk']),
+        bonuses: 0,
+        fuel_total: 0,
+        reported_driver_payout: getRowNumber(row, ['payout', 'payment', 'wyplata']),
+        import_note: buildImportNote('FreeNow')
+      };
+    }).filter(row => row.imported_name && (row.gross_platform_income || row.platform_net_income || row.reported_driver_payout));
+  }
+
+  function parseFuelRows(rows, fileName) {
+    return rows.map(row => {
+      const descriptor = buildImportedDriverDescriptor(row);
+      return {
+        ...descriptor,
+        provider: 'fuel',
+        source_file: fileName,
+        gross_platform_income: 0,
+        platform_net_income: 0,
+        cash_collected: 0,
+        bonuses: 0,
+        fuel_total: getRowAbsNumber(row, ['fuel total', 'fuel amount', 'paliwo', 'kwota', 'amount', 'wartosc', 'wartość', 'suma', 'total']),
+        reported_driver_payout: 0,
+        import_note: buildImportNote('Fuel')
+      };
+    }).filter(row => row.imported_name && row.fuel_total);
+  }
+
+  function parseRowsByKind(kind, rows, fileName) {
+    if (kind === 'uber') return parseUberRows(rows, fileName);
+    if (kind === 'bolt') return parseBoltRows(rows, fileName);
+    if (kind === 'freenow') return parseFreeNowRows(rows, fileName);
+    if (kind === 'fuel') return parseFuelRows(rows, fileName);
+    return [];
+  }
+
+  function buildImportPreviewRow(group, periodId) {
+    const existingSettlement = group.matched_driver_id
+      ? findExistingSettlement(periodId, group.matched_driver_id)
+      : null;
+
+    const prefilledDraft = group.matched_driver_id
+      ? applySettlementDraftDefaults(getInitialSettlementDraft({
+        settlement_id: safe(existingSettlement?.id),
+        period_id: periodId,
+        driver_id: group.matched_driver_id,
+        gross_platform_income: decimalInputValue(group.gross_platform_income, '0'),
+        platform_net_income: decimalInputValue(group.platform_net_income, '0'),
+        bonuses: decimalInputValue(group.bonuses, '0'),
+        cash_collected: decimalInputValue(group.cash_collected, '0'),
+        fuel_total: decimalInputValue(group.fuel_total, '0'),
+        calculation_notes: group.import_notes.join('\n')
+      }))
+      : null;
+
+    const context = prefilledDraft ? buildDriverSettlementContext(prefilledDraft) : null;
+
+    return {
+      ...group,
+      existing_settlement_id: safe(existingSettlement?.id),
+      existing_settlement_status: safe(existingSettlement?.status),
+      inferred_vehicle_id: safe(context?.inferredVehicleId),
+      inferred_vehicle: context?.vehicle || null,
+      estimated_payout_to_driver: num(context?.calculatedPayout),
+      prefilled_draft: prefilledDraft
+    };
+  }
+
+  function rebuildSettlementImportRows(periodId, sourceReports = state.settlementImport.source_reports || []) {
+    const groups = {};
+    const warnings = [];
+
+    sourceReports.forEach(report => {
+      if (report.kind === 'unknown') {
+        warnings.push(`Unsupported CSV format: ${report.file_name}`);
+        return;
+      }
+
+      report.rows.forEach(importRow => {
+        const matchedDriver = matchImportedDriver(importRow);
+        const groupKey = matchedDriver
+          ? `driver:${matchedDriver.id}`
+          : `unmatched:${normalizeLookupText(importRow.imported_name || importRow.imported_email || importRow.imported_phone || importRow.imported_external_id || report.file_name)}`;
+
+        if (!groups[groupKey]) {
+          groups[groupKey] = {
+            key: groupKey,
+            period_id: periodId,
+            matched_driver_id: matchedDriver ? String(matchedDriver.id) : '',
+            matched_driver_name: matchedDriver ? fullName(matchedDriver) : '',
+            imported_name: importRow.imported_name,
+            imported_email: importRow.imported_email,
+            imported_phone: importRow.imported_phone,
+            gross_platform_income: 0,
+            platform_net_income: 0,
+            cash_collected: 0,
+            bonuses: 0,
+            fuel_total: 0,
+            reported_driver_payout: 0,
+            source_files: [],
+            providers: [],
+            import_notes: [],
+            unmatched_reason: matchedDriver ? '' : 'No CRM driver match'
+          };
+        }
+
+        const group = groups[groupKey];
+        group.imported_name = group.imported_name || importRow.imported_name;
+        group.imported_email = group.imported_email || importRow.imported_email;
+        group.imported_phone = group.imported_phone || importRow.imported_phone;
+        group.gross_platform_income += num(importRow.gross_platform_income);
+        group.platform_net_income += num(importRow.platform_net_income);
+        group.cash_collected += num(importRow.cash_collected);
+        group.bonuses += num(importRow.bonuses);
+        group.fuel_total += num(importRow.fuel_total);
+        group.reported_driver_payout += num(importRow.reported_driver_payout);
+
+        if (!group.source_files.includes(importRow.source_file)) group.source_files.push(importRow.source_file);
+        if (!group.providers.includes(importRow.provider)) group.providers.push(importRow.provider);
+        if (safe(importRow.import_note)) group.import_notes.push(importRow.import_note);
+      });
+    });
+
+    const previewRows = Object.values(groups)
+      .map(group => buildImportPreviewRow(group, periodId))
+      .sort((left, right) => {
+        if (safe(left.matched_driver_name) && safe(right.matched_driver_name)) {
+          return safe(left.matched_driver_name).localeCompare(safe(right.matched_driver_name), 'uk');
+        }
+        return safe(left.imported_name).localeCompare(safe(right.imported_name), 'uk');
+      });
+
+    return {
+      rows: previewRows,
+      unmatched_rows: previewRows.filter(row => !row.matched_driver_id),
+      warnings
+    };
+  }
+
+  async function parseSettlementImportSources(files, periodId) {
+    const sourceReports = [];
+    const warnings = [];
+
+    for (const file of files) {
+      const text = typeof file.text === 'function' ? await file.text() : safe(file.text);
+      const parsed = parseCsvText(text);
+      const kind = detectReportKind(parsed.headers, file.name);
+      const rows = parseRowsByKind(kind, parsed.rows, file.name);
+
+      sourceReports.push({
+        file_name: file.name,
+        kind,
+        row_count: rows.length,
+        rows
+      });
+
+      if (kind === 'unknown') {
+        warnings.push(`Unsupported CSV format: ${file.name}`);
+      }
+      if (kind !== 'unknown' && !rows.length) {
+        warnings.push(`No usable rows found in ${file.name}`);
+      }
+    }
+
+    const rebuilt = rebuildSettlementImportRows(periodId, sourceReports);
+
+    return {
+      period_id: periodId,
+      source_files: files.map(file => file.name),
+      source_reports: sourceReports,
+      rows: rebuilt.rows,
+      unmatched_rows: rebuilt.unmatched_rows,
+      warnings: [...warnings, ...rebuilt.warnings],
+      last_error: '',
+      last_imported_at: isoNow()
+    };
+  }
+
+  function clearSettlementImport(keepPeriod = true) {
+    state.settlementImport = getInitialSettlementImportState({
+      period_id: keepPeriod ? safe(state.settlementImport.period_id) : ''
+    });
+    renderAll();
+  }
+
+  function buildDraftFromImportedRow(importRow, existingSettlement = null) {
+    const baseDraft = existingSettlement ? settlementToDraft(existingSettlement) : getInitialSettlementDraft();
+    const mergedNotes = [
+      safe(baseDraft.calculation_notes),
+      ...importRow.import_notes,
+      importRow.reported_driver_payout ? `Platform reported payout: ${money(importRow.reported_driver_payout)}` : ''
+    ].filter(Boolean).join('\n');
+
+    return applySettlementDraftDefaults(getInitialSettlementDraft({
+      ...baseDraft,
+      settlement_id: safe(existingSettlement?.id),
+      period_id: importRow.period_id,
+      driver_id: importRow.matched_driver_id,
+      vehicle_id: safe(baseDraft.vehicle_id) || safe(importRow.inferred_vehicle_id),
+      gross_platform_income: decimalInputValue(importRow.gross_platform_income, safe(baseDraft.gross_platform_income) || '0'),
+      platform_net_income: decimalInputValue(importRow.platform_net_income, safe(baseDraft.platform_net_income) || '0'),
+      bonuses: decimalInputValue(importRow.bonuses || baseDraft.bonuses, '0'),
+      cash_collected: decimalInputValue(importRow.cash_collected, safe(baseDraft.cash_collected) || '0'),
+      fuel_total: decimalInputValue(importRow.fuel_total || baseDraft.fuel_total, '0'),
+      calculation_notes: mergedNotes
+    }));
+  }
+
+  function openImportedSettlementDraft(importKey) {
+    const importRow = state.settlementImport.rows.find(row => row.key === importKey);
+    if (!importRow || !importRow.matched_driver_id) return;
+
+    const existingSettlement = importRow.existing_settlement_id
+      ? state.settlements.find(item => String(item.id) === String(importRow.existing_settlement_id))
+      : null;
+
+    closeAllForms();
+    state.forms.settlement = true;
+    state.settlementDraft = buildDraftFromImportedRow(importRow, existingSettlement);
+    setPage('settlements');
+    renderAll();
+  }
+
+  async function upsertImportedSettlements(importKey = '') {
+    clearMsg(el.appMsg);
+
+    const candidates = (importKey
+      ? state.settlementImport.rows.filter(row => row.key === importKey)
+      : state.settlementImport.rows
+    ).filter(row => row.matched_driver_id);
+
+    if (!candidates.length) {
+      showMsg(el.appMsg, 'No matched imported rows to save.');
+      return;
+    }
+
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const blockedStatuses = ['approved', 'sent', 'paid', 'disputed'];
+
+    try {
+      for (const candidate of candidates) {
+        const existingSettlement = candidate.existing_settlement_id
+          ? state.settlements.find(item => String(item.id) === String(candidate.existing_settlement_id))
+          : null;
+
+        if (blockedStatuses.includes(safe(existingSettlement?.status).toLowerCase())) {
+          skipped += 1;
+          continue;
+        }
+
+        const draft = buildDraftFromImportedRow(candidate, existingSettlement);
+        const context = buildDriverSettlementContext(draft);
+
+        if (!context.vehicle) {
+          skipped += 1;
+          continue;
+        }
+
+        const nextStatus = existingSettlement
+          ? (safe(existingSettlement.status) || 'calculated')
+          : 'calculated';
+
+        const payload = settlementPayloadFromDraft(
+          draft,
+          nextStatus === 'draft' ? 'calculated' : nextStatus
+        );
+
+        if (existingSettlement) {
+          await updateSettlement(existingSettlement.id, payload);
+          updated += 1;
+        } else {
+          await createSettlement(payload);
+          created += 1;
+        }
+      }
+
+      showMsg(
+        el.appMsg,
+        `Import applied. Created: ${created}, updated: ${updated}, skipped: ${skipped}.`,
+        'success'
+      );
+      await loadAllData();
+      if (safe(state.settlementImport.period_id) && state.settlementImport.source_reports.length) {
+        const rebuilt = rebuildSettlementImportRows(state.settlementImport.period_id, state.settlementImport.source_reports);
+        state.settlementImport = {
+          ...state.settlementImport,
+          rows: rebuilt.rows,
+          unmatched_rows: rebuilt.unmatched_rows,
+          warnings: rebuilt.warnings,
+          last_error: ''
+        };
+        renderAll();
+      }
+    } catch (error) {
+      showMsg(el.appMsg, error.message || 'Failed to apply imported settlements.');
+    }
+  }
+
+  function renderSettlementImportCard() {
+    const importState = state.settlementImport || getInitialSettlementImportState();
+    const matchedRows = importState.rows.filter(row => row.matched_driver_id);
+
+    return `
+      <div class="form-card">
+        <h3 class="form-title">Auto-calc imports</h3>
+
+        <div class="form-grid-wide">
+          <div class="form-field">
+            <label>Settlement period *</label>
+            <select id="settlementImportPeriod">
+              <option value="">Select period</option>
+              ${state.periods.map(period => `
+                <option value="${escapeHtml(period.id)}" ${String(period.id) === String(importState.period_id) ? 'selected' : ''}>
+                  ${escapeHtml(periodLabel(period))}
+                </option>
+              `).join('')}
+            </select>
+          </div>
+
+          <div class="form-field form-field-span-2">
+            <label>Upload weekly CSV reports</label>
+            <input id="settlementImportFiles" type="file" accept=".csv,text/csv" multiple />
+          </div>
+
+          <div class="form-field">
+            <label>Actions</label>
+            <div class="button-cluster">
+              <button type="button" class="secondary" id="clearSettlementImportBtn">Clear import</button>
+              <button type="button" id="bulkApplySettlementImportBtn" ${matchedRows.length ? '' : 'disabled'}>Create / update matched</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="helper-text">
+          Files stay in the browser. Supported now: Uber CSV, Bolt CSV, FreeNow-style generic CSV, fuel CSV by driver. Imported data pre-fills snapshot fields for weekly settlements.
+        </div>
+
+        ${importState.last_imported_at ? `
+          <div class="helper-grid">
+            <div class="helper-card">
+              <div class="helper-label">Imported files</div>
+              <div class="helper-value">${importState.source_reports.length}</div>
+              <div class="helper-note">${escapeHtml(importState.source_files.join(', ') || '-')}</div>
+            </div>
+            <div class="helper-card">
+              <div class="helper-label">Matched drivers</div>
+              <div class="helper-value">${matchedRows.length}</div>
+              <div class="helper-note">${importState.unmatched_rows.length} unmatched</div>
+            </div>
+            <div class="helper-card">
+              <div class="helper-label">Gross imported</div>
+              <div class="helper-value">${money(importState.rows.reduce((sum, row) => sum + num(row.gross_platform_income), 0))}</div>
+              <div class="helper-note">Across all matched rows</div>
+            </div>
+            <div class="helper-card">
+              <div class="helper-label">Imported at</div>
+              <div class="helper-value">${escapeHtml(importState.last_imported_at.slice(0, 16).replace('T', ' '))}</div>
+              <div class="helper-note">Client-side parse</div>
+            </div>
+          </div>
+        ` : ''}
+
+        ${importState.warnings.length ? `
+          <div class="summary-breakdown">
+            ${importState.warnings.map(warning => `
+              <div class="summary-breakdown-row">
+                <span class="danger-text">${escapeHtml(warning)}</span>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+
+        ${matchedRows.length ? `
+          <div class="card import-preview-card">
+            <h4 class="card-title">Matched import preview</h4>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Imported driver / CRM match</th>
+                    <th>Sources</th>
+                    <th>Imported totals</th>
+                    <th>Estimated settlement</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${matchedRows.map(row => `
+                    <tr>
+                      <td>
+                        <strong>${escapeHtml(row.matched_driver_name)}</strong>
+                        <div class="details-subvalue">${escapeHtml(row.imported_name || '-')}</div>
+                        <div class="details-subvalue">${escapeHtml(row.imported_email || row.imported_phone || '-')}</div>
+                      </td>
+                      <td>
+                        <div>${escapeHtml(row.providers.join(', '))}</div>
+                        <div class="details-subvalue">${escapeHtml(row.source_files.join(', '))}</div>
+                        <div class="details-subvalue">${row.existing_settlement_id ? `Existing: ${escapeHtml(humanize(row.existing_settlement_status || 'draft'))}` : 'New settlement'}</div>
+                      </td>
+                      <td>
+                        <div class="table-stack">
+                          <div class="table-stack-row"><span>Gross</span><strong>${money(row.gross_platform_income)}</strong></div>
+                          <div class="table-stack-row"><span>Net</span><strong>${money(row.platform_net_income)}</strong></div>
+                          <div class="table-stack-row"><span>Cash</span><strong>${money(row.cash_collected)}</strong></div>
+                          <div class="table-stack-row"><span>Fuel</span><strong>${money(row.fuel_total)}</strong></div>
+                        </div>
+                      </td>
+                      <td>
+                        <div class="${payoutToneClass(row.estimated_payout_to_driver)}"><strong>${money(row.estimated_payout_to_driver)}</strong></div>
+                        <div class="details-subvalue">${escapeHtml(row.inferred_vehicle ? vehicleLabel(row.inferred_vehicle) : 'No inferred vehicle')}</div>
+                        <div class="details-subvalue">${row.reported_driver_payout ? `Platform payout: ${money(row.reported_driver_payout)}` : 'No platform payout column'}</div>
+                      </td>
+                      <td>
+                        <div class="button-cluster">
+                          <button type="button" class="secondary" data-import-open="${escapeHtml(row.key)}">Open draft</button>
+                          <button type="button" data-import-apply="${escapeHtml(row.key)}">Apply</button>
+                        </div>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ` : ''}
+
+        ${importState.unmatched_rows.length ? `
+          <div class="card import-preview-card">
+            <h4 class="card-title">Unmatched import rows</h4>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Imported driver</th>
+                    <th>Sources</th>
+                    <th>Totals</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${importState.unmatched_rows.map(row => `
+                    <tr>
+                      <td>
+                        <strong>${escapeHtml(row.imported_name || '-')}</strong>
+                        <div class="details-subvalue">${escapeHtml(row.imported_email || row.imported_phone || '-')}</div>
+                      </td>
+                      <td>${escapeHtml(row.providers.join(', '))}</td>
+                      <td>${money(row.platform_net_income || row.gross_platform_income || row.fuel_total)}</td>
+                      <td>${escapeHtml(row.unmatched_reason || 'No CRM match')}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
   function renderPeriodFormCard() {
     return `
       <div class="form-card">
@@ -908,6 +1646,68 @@ export function createDriverSettlementsModule({
     qs('cancelPeriodFormBtn')?.addEventListener('click', closePeriodForm);
   }
 
+  async function onSettlementImportFilesSelected(event) {
+    clearMsg(el.appMsg);
+
+    const periodId = safe(qs('settlementImportPeriod')?.value || state.settlementImport.period_id);
+    const files = Array.from(event.target.files || []);
+
+    if (!periodId) {
+      showMsg(el.appMsg, 'Select settlement period before importing CSV reports.');
+      event.target.value = '';
+      return;
+    }
+
+    if (!files.length) return;
+
+    try {
+      state.settlementImport = await parseSettlementImportSources(files, periodId);
+      renderAll();
+      showMsg(el.appMsg, `Imported ${files.length} CSV file(s).`, 'success');
+    } catch (error) {
+      state.settlementImport = {
+        ...getInitialSettlementImportState({ period_id: periodId }),
+        last_error: error.message || 'Failed to parse imported files.'
+      };
+      renderAll();
+      showMsg(el.appMsg, error.message || 'Failed to parse imported files.');
+    } finally {
+      event.target.value = '';
+    }
+  }
+
+  function bindSettlementImportEvents() {
+    qs('settlementImportPeriod')?.addEventListener('change', event => {
+      const nextPeriodId = event.target.value;
+      state.settlementImport.period_id = nextPeriodId;
+
+      if (state.settlementImport.source_reports.length) {
+        const rebuilt = rebuildSettlementImportRows(nextPeriodId, state.settlementImport.source_reports);
+        state.settlementImport = {
+          ...state.settlementImport,
+          period_id: nextPeriodId,
+          rows: rebuilt.rows,
+          unmatched_rows: rebuilt.unmatched_rows,
+          warnings: rebuilt.warnings
+        };
+      }
+
+      renderSettlementsPage();
+    });
+
+    qs('settlementImportFiles')?.addEventListener('change', onSettlementImportFilesSelected);
+    qs('clearSettlementImportBtn')?.addEventListener('click', () => clearSettlementImport());
+    qs('bulkApplySettlementImportBtn')?.addEventListener('click', () => upsertImportedSettlements());
+
+    document.querySelectorAll('[data-import-open]').forEach(node => {
+      node.addEventListener('click', () => openImportedSettlementDraft(node.getAttribute('data-import-open')));
+    });
+
+    document.querySelectorAll('[data-import-apply]').forEach(node => {
+      node.addEventListener('click', () => upsertImportedSettlements(node.getAttribute('data-import-apply')));
+    });
+  }
+
   function renderSettlementsPage() {
     if (!el.settlementsPage) return;
 
@@ -991,6 +1791,8 @@ export function createDriverSettlementsModule({
           <button type="button" class="secondary" id="newPeriodBtn">New period</button>
         </div>
       </div>
+
+      ${renderSettlementImportCard()}
 
       ${state.forms.period ? renderPeriodFormCard() : ''}
       ${state.forms.settlement ? renderSettlementFormCard() : ''}
@@ -1094,22 +1896,27 @@ export function createDriverSettlementsModule({
 
     bindSettlementFormEvents();
     bindPeriodFormEvents();
+    bindSettlementImportEvents();
   }
 
   return {
     buildDriverSettlementContext,
     closeSettlementForm,
+    clearSettlementImport,
     getDriverOutstandingBalance,
     getOutstandingBalanceTotal,
     getSettlementConfig,
     getSettlementDocumentMetadata,
     isSettlementExcludedDriver,
+    openImportedSettlementDraft,
     openNewSettlementForm,
     openSettlementEditor,
+    parseSettlementImportSources,
     recalculateSettlement,
     renderSettlementsPage,
     settlementDrivers,
     settlementToDraft,
+    upsertImportedSettlements,
     updateSettlementStatus
   };
 }
