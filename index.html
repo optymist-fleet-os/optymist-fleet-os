@@ -7,25 +7,25 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>OPTYMIST Fleet OS</title>
-  <link rel="stylesheet" href="/styles.css?v=20260425-2" />
-  <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link rel="stylesheet" href="/styles.css?v=20260425-3" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <div id="authView" class="auth-wrap">
     <div class="auth-card">
       <h1>OPTYMIST Fleet OS</h1>
-      <p class="muted">Settlement CRM MVP</p>
+      <p class="muted">Settlement CRM back office</p>
 
       <div id="msg"></div>
 
       <div class="auth-grid">
         <input id="email" type="email" placeholder="Email" autocomplete="email" />
-        <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" />
+        <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
       </div>
 
       <div class="auth-actions">
-        <button id="signInBtn" type="button">Увійти</button>
-        <button id="signUpBtn" type="button" class="secondary">Зареєструватися</button>
+        <button id="signInBtn" type="button">Sign in</button>
+        <button id="signUpBtn" type="button" class="secondary">Sign up</button>
       </div>
     </div>
   </div>
@@ -40,16 +40,17 @@
 
         <nav class="menu">
           <button class="menu-btn active" data-page="dashboard">Dashboard</button>
-          <button class="menu-btn" data-page="drivers">Водії</button>
-          <button class="menu-btn" data-page="vehicles">Авто</button>
-          <button class="menu-btn" data-page="owners">Власники</button>
+          <button class="menu-btn" data-page="drivers">Drivers</button>
+          <button class="menu-btn" data-page="vehicles">Vehicles</button>
+          <button class="menu-btn" data-page="owners">Owners</button>
           <button class="menu-btn" data-page="owner-settlements">Owner settlements</button>
-          <button class="menu-btn" data-page="settlements">Розрахунки</button>
+          <button class="menu-btn" data-page="settlements">Driver settlements</button>
+          <button class="menu-btn" data-page="documents">Documents</button>
         </nav>
       </div>
 
       <div class="sidebar-footer">
-        <div class="muted small">Settlement CRM MVP</div>
+        <div class="muted small">Google Drive ready metadata layer</div>
       </div>
     </aside>
 
@@ -57,13 +58,13 @@
       <header class="topbar">
         <div>
           <h1 id="pageTitle">Dashboard</h1>
-          <div class="muted" id="pageSubtitle">Settlement-first back office</div>
+          <div class="muted" id="pageSubtitle">Fleet finance, operations and document overview</div>
         </div>
 
         <div class="topbar-actions">
           <span id="userEmail" class="muted"></span>
-          <button id="refreshBtn" class="secondary">Оновити</button>
-          <button id="logoutBtn">Вийти</button>
+          <button id="refreshBtn" class="secondary">Refresh</button>
+          <button id="logoutBtn">Logout</button>
         </div>
       </header>
 
@@ -77,6 +78,7 @@
           <section id="page-owners" class="page hidden"></section>
           <section id="page-owner-settlements" class="page hidden"></section>
           <section id="page-settlements" class="page hidden"></section>
+          <section id="page-documents" class="page hidden"></section>
         </div>
 
         <aside id="detailsPanel" class="details-panel hidden">
@@ -84,9 +86,9 @@
             <div class="details-header">
               <div>
                 <div id="detailsKicker" class="muted small">Details</div>
-                <h3 id="detailsTitle">Вибери рядок</h3>
+                <h3 id="detailsTitle">Select a row</h3>
               </div>
-              <button id="closeDetailsBtn" class="secondary" type="button">Закрити</button>
+              <button id="closeDetailsBtn" class="secondary" type="button">Close</button>
             </div>
             <div id="detailsBody"></div>
           </div>
@@ -95,6 +97,6 @@
     </main>
   </div>
 
-  <script defer src="/app.js?v=20260425-2"></script>
+  <script type="module" src="/js/main.js?v=20260425-3"></script>
 </body>
 </html>
