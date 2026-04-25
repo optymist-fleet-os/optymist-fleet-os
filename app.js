@@ -34,12 +34,12 @@ const state = {
     settlementStatus: 'all'
   },
   forms: {
-  driver: false,
-  vehicle: false,
-  owner: false,
-  period: false,
-  assignment: false
-}
+    driver: false,
+    vehicle: false,
+    owner: false,
+    period: false,
+    assignment: false
+  }
 };
 
 const el = {};
@@ -146,20 +146,48 @@ function isStaff() {
   return state.roles.includes('admin') || state.roles.includes('operator');
 }
 
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function dayBeforeIso(isoDate) {
+  const d = new Date(`${isoDate}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function isAssignmentActiveOn(assignment, isoDate) {
+  const from = safe(assignment.assigned_from);
+  const to = safe(assignment.assigned_to);
+
+  if (from && from > isoDate) return false;
+  if (to && to < isoDate) return false;
+  return true;
+}
+
 function getCurrentAssignmentForDriver(driverId) {
-  return state.assignments.find(
-    a =>
-      String(a.driver_id) === String(driverId) &&
-      (!a.assigned_to || a.assigned_to >= new Date().toISOString().slice(0, 10))
-  ) || null;
+  const today = todayIso();
+  return (
+    state.assignments.find(
+      a =>
+        String(a.driver_id) === String(driverId) &&
+        safe(a.assigned_from) <= today &&
+        (!a.assigned_to || safe(a.assigned_to) > today)
+    ) || null
+  );
 }
 
 function getCurrentAssignmentForVehicle(vehicleId) {
-  return state.assignments.find(
-    a =>
-      String(a.vehicle_id) === String(vehicleId) &&
-      (!a.assigned_to || a.assigned_to >= new Date().toISOString().slice(0, 10))
-  ) || null;
+  const today = todayIso();
+  return (
+    state.assignments.find(
+      a =>
+        String(a.vehicle_id) === String(vehicleId) &&
+        safe(a.assigned_from) <= today &&
+        (!a.assigned_to || safe(a.assigned_to) > today)
+    ) || null
+  );
 }
 
 function nullIfBlank(v) {
@@ -210,6 +238,23 @@ async function createVehicle(payload) {
 
 async function createPeriod(payload) {
   const { error } = await db.from('settlement_periods').insert([payload]);
+  if (error) throw error;
+}
+
+async function updateAssignment(assignmentId, payload) {
+  const { error } = await db
+    .from('driver_vehicle_assignments')
+    .update(payload)
+    .eq('id', assignmentId);
+
+  if (error) throw error;
+}
+
+async function createAssignment(payload) {
+  const { error } = await db
+    .from('driver_vehicle_assignments')
+    .insert([payload]);
+
   if (error) throw error;
 }
 
@@ -363,6 +408,183 @@ async function onCreatePeriodSubmit(event) {
     await loadAllData();
   } catch (e) {
     showMsg(el.appMsg, e.message || 'Не вдалося створити період');
+  }
+}
+
+function renderAssignmentFormCard() {
+  const selectedDriverId =
+    state.selectedDetails?.type === 'driver'
+      ? String(state.selectedDetails.id)
+      : '';
+
+  const selectedVehicleId =
+    state.selectedDetails?.type === 'vehicle'
+      ? String(state.selectedDetails.id)
+      : '';
+
+  const selectedDriverAssignment =
+    state.selectedDetails?.type === 'driver'
+      ? getCurrentAssignmentForDriver(state.selectedDetails.id)
+      : null;
+
+  const selectedRent = selectedDriverAssignment?.driver_weekly_rent
+    ? String(selectedDriverAssignment.driver_weekly_rent)
+    : '';
+
+  return `
+    <div class="form-card">
+      <h3 class="form-title">Призначити авто водію</h3>
+
+      <form id="assignmentCreateForm">
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Водій *</label>
+            <select name="driver_id" required>
+              <option value="">Вибери водія</option>
+              ${state.drivers.map(driver => {
+                const current = getCurrentAssignmentForDriver(driver.id);
+                const currentVehicle = current
+                  ? state.vehicles.find(v => String(v.id) === String(current.vehicle_id))
+                  : null;
+
+                return `
+                  <option value="${escapeHtml(driver.id)}" ${String(driver.id) === selectedDriverId ? 'selected' : ''}>
+                    ${escapeHtml(fullName(driver))} — ${escapeHtml(currentVehicle ? vehicleLabel(currentVehicle) : 'без авто')}
+                  </option>
+                `;
+              }).join('')}
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label>Авто *</label>
+            <select name="vehicle_id" required>
+              <option value="">Вибери авто</option>
+              ${state.vehicles.map(vehicle => {
+                const current = getCurrentAssignmentForVehicle(vehicle.id);
+                const currentDriver = current
+                  ? state.drivers.find(d => String(d.id) === String(current.driver_id))
+                  : null;
+
+                return `
+                  <option value="${escapeHtml(vehicle.id)}" ${String(vehicle.id) === selectedVehicleId ? 'selected' : ''}>
+                    ${escapeHtml(vehicleLabel(vehicle))} — ${escapeHtml(currentDriver ? fullName(currentDriver) : 'без водія')}
+                  </option>
+                `;
+              }).join('')}
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label>Дата старту *</label>
+            <input name="assigned_from" type="date" value="${todayIso()}" required />
+          </div>
+
+          <div class="form-field">
+            <label>Дата завершення</label>
+            <input name="assigned_to" type="date" />
+          </div>
+
+          <div class="form-field">
+            <label>Оренда водія / тиждень</label>
+            <input name="driver_weekly_rent" type="number" step="0.01" value="${escapeHtml(selectedRent)}" />
+          </div>
+
+          <div class="form-field">
+            <label>Нотатки</label>
+            <input name="notes" />
+          </div>
+        </div>
+
+        <div class="helper-text">
+          Якщо у водія або авто вже є активна прив’язка, система автоматично закриє її днем раніше за нову дату старту.
+        </div>
+
+        <div class="form-actions">
+          <button type="submit">Створити призначення</button>
+          <button type="button" class="secondary" id="cancelAssignmentFormBtn">Скасувати</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+async function onCreateAssignmentSubmit(event) {
+  event.preventDefault();
+  clearMsg(el.appMsg);
+
+  const fd = new FormData(event.target);
+
+  const driver_id = safe(fd.get('driver_id'));
+  const vehicle_id = safe(fd.get('vehicle_id'));
+  const assigned_from = safe(fd.get('assigned_from'));
+  const assigned_to = nullIfBlank(fd.get('assigned_to'));
+  const driver_weekly_rent = nullIfBlank(fd.get('driver_weekly_rent'));
+  const notes = nullIfBlank(fd.get('notes'));
+
+  if (!driver_id || !vehicle_id || !assigned_from) {
+    showMsg(el.appMsg, 'Потрібно вибрати водія, авто і дату старту');
+    return;
+  }
+
+  const driver = state.drivers.find(d => String(d.id) === String(driver_id));
+  const vehicle = state.vehicles.find(v => String(v.id) === String(vehicle_id));
+
+  if (!driver || !vehicle) {
+    showMsg(el.appMsg, 'Не знайдено водія або авто');
+    return;
+  }
+
+  const conflicts = state.assignments.filter(a =>
+    isAssignmentActiveOn(a, assigned_from) &&
+    (
+      String(a.driver_id) === String(driver_id) ||
+      String(a.vehicle_id) === String(vehicle_id)
+    )
+  );
+
+  const closeDate = dayBeforeIso(assigned_from);
+
+  try {
+    if (conflicts.length && closeDate) {
+      for (const conflict of conflicts) {
+        await updateAssignment(conflict.id, { assigned_to: closeDate });
+      }
+    }
+
+    await createAssignment({
+      driver_id,
+      vehicle_id,
+      assigned_from,
+      assigned_to,
+      driver_weekly_rent: driver_weekly_rent ? Number(driver_weekly_rent) : null,
+      notes
+    });
+
+    showMsg(
+      el.appMsg,
+      conflicts.length
+        ? `Призначення створено. Закрито попередніх активних прив’язок: ${conflicts.length}`
+        : 'Призначення створено',
+      'success'
+    );
+
+    closeAllForms();
+    await loadAllData();
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Не вдалося створити призначення');
+  }
+}
+
+async function onEndAssignmentTodayClick(assignmentId) {
+  clearMsg(el.appMsg);
+
+  try {
+    await updateAssignment(assignmentId, { assigned_to: todayIso() });
+    showMsg(el.appMsg, 'Призначення завершено', 'success');
+    await loadAllData();
+  } catch (e) {
+    showMsg(el.appMsg, e.message || 'Не вдалося завершити призначення');
   }
 }
 
@@ -686,7 +908,7 @@ function renderDashboard() {
   const grossIncomeTotal = settlements.reduce((sum, r) => sum + num(r.gross_platform_income), 0);
   const commissionTotal = settlements.reduce((sum, r) => sum + num(r.company_commission), 0);
   const settlementDocsCount = state.documents.filter(d => safe(d.document_type) === 'settlement_pdf').length;
-  const recent = settlements.slice(0, 8);
+  const recent = state.settlements.slice(0, 8);
 
   if (!el.dashboardPage) return;
 
@@ -756,6 +978,7 @@ function renderDriversPage() {
       safe(d.contract_status),
       safe(d.onboarding_stage)
     ].join(' ').toLowerCase();
+
     return !q || blob.includes(q);
   });
 
@@ -763,8 +986,19 @@ function renderDriversPage() {
     <div class="card">
       <div class="action-bar">
         <div class="muted">Список водіїв</div>
-        <button id="toggleDriverFormBtn" type="button">${state.forms.driver ? 'Сховати форму' : 'Додати водія'}</button>
+
+        <div class="form-actions" style="margin-top:0;">
+          <button id="toggleAssignmentFormBtn" type="button" class="secondary">
+            ${state.forms.assignment ? 'Сховати прив’язку' : 'Призначити авто'}
+          </button>
+
+          <button id="toggleDriverFormBtn" type="button">
+            ${state.forms.driver ? 'Сховати форму' : 'Додати водія'}
+          </button>
+        </div>
       </div>
+
+      ${state.forms.assignment ? renderAssignmentFormCard() : ''}
 
       ${
         state.forms.driver ? `
@@ -778,6 +1012,7 @@ function renderDriversPage() {
                 <div class="form-field"><label>Паспорт</label><input name="passport_number" /></div>
                 <div class="form-field"><label>Номер прав</label><input name="driver_license_number" /></div>
                 <div class="form-field"><label>Дата старту</label><input name="joined_at" type="date" /></div>
+
                 <div class="form-field">
                   <label>Статус</label>
                   <select name="status">
@@ -787,6 +1022,7 @@ function renderDriversPage() {
                     <option value="inactive">inactive</option>
                   </select>
                 </div>
+
                 <div class="form-field">
                   <label>Контракт</label>
                   <select name="contract_status">
@@ -797,6 +1033,7 @@ function renderDriversPage() {
                     <option value="terminated">terminated</option>
                   </select>
                 </div>
+
                 <div class="form-field">
                   <label>Онбординг</label>
                   <select name="onboarding_stage">
@@ -863,6 +1100,10 @@ function renderDriversPage() {
     </div>
   `;
 
+  qs('toggleAssignmentFormBtn')?.addEventListener('click', () => toggleForm('assignment'));
+  qs('cancelAssignmentFormBtn')?.addEventListener('click', () => toggleForm('assignment'));
+  qs('assignmentCreateForm')?.addEventListener('submit', onCreateAssignmentSubmit);
+
   qs('toggleDriverFormBtn')?.addEventListener('click', () => toggleForm('driver'));
   qs('cancelDriverFormBtn')?.addEventListener('click', () => toggleForm('driver'));
   qs('driverCreateForm')?.addEventListener('submit', onCreateDriverSubmit);
@@ -892,6 +1133,7 @@ function renderVehiclesPage() {
       safe(v.model),
       safe(v.status)
     ].join(' ').toLowerCase();
+
     return !q || blob.includes(q);
   });
 
@@ -1040,6 +1282,7 @@ function renderOwnersPage() {
       safe(o.bank_account),
       safe(o.owner_type)
     ].join(' ').toLowerCase();
+
     return !q || blob.includes(q);
   });
 
@@ -1374,6 +1617,16 @@ function renderDetailsPanel() {
           <div class="details-item"><div class="details-label">Оренда</div><div class="details-value">${assignment ? money(assignment.driver_weekly_rent) : '-'}</div></div>
           <div class="details-item"><div class="details-label">Призначено</div><div class="details-value">${escapeHtml(safe(assignment?.assigned_from) || '-')}</div></div>
         </div>
+
+        ${
+          assignment ? `
+            <div class="form-actions">
+              <button type="button" class="secondary" id="endDriverAssignmentBtn">Завершити призначення сьогодні</button>
+            </div>
+          ` : `
+            <div class="helper-text">Активного призначення немає.</div>
+          `
+        }
       </div>
 
       <div class="details-section">
@@ -1384,6 +1637,8 @@ function renderDetailsPanel() {
         </div>
       </div>
     `;
+
+    qs('endDriverAssignmentBtn')?.addEventListener('click', () => onEndAssignmentTodayClick(assignment.id));
     return;
   }
 
@@ -1428,8 +1683,20 @@ function renderDetailsPanel() {
           <div class="details-item"><div class="details-label">Власник</div><div class="details-value">${escapeHtml(ownerLabel(owner))}</div></div>
           <div class="details-item"><div class="details-label">Поточний водій</div><div class="details-value">${escapeHtml(fullName(driver))}</div></div>
         </div>
+
+        ${
+          assignment ? `
+            <div class="form-actions">
+              <button type="button" class="secondary" id="endVehicleAssignmentBtn">Завершити призначення сьогодні</button>
+            </div>
+          ` : `
+            <div class="helper-text">Активного призначення немає.</div>
+          `
+        }
       </div>
     `;
+
+    qs('endVehicleAssignmentBtn')?.addEventListener('click', () => onEndAssignmentTodayClick(assignment.id));
     return;
   }
 
