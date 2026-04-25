@@ -404,11 +404,50 @@ alter table public.audit_logs
   add column if not exists created_at timestamptz not null default now();
 
 alter table public.driver_settlements drop constraint if exists driver_settlements_status_check;
+update public.driver_settlements
+set status = case lower(coalesce(status, ''))
+  when 'draft' then 'draft'
+  when 'pending' then 'draft'
+  when 'imported' then 'calculated'
+  when 'generated' then 'calculated'
+  when 'ready' then 'calculated'
+  when 'calculated' then 'calculated'
+  when 'approved' then 'approved'
+  when 'sent' then 'sent'
+  when 'paid' then 'paid'
+  when 'disputed' then 'disputed'
+  when 'cancelled' then 'cancelled'
+  else 'draft'
+end;
 alter table public.driver_settlements
   add constraint driver_settlements_status_check
   check (status in ('draft', 'calculated', 'approved', 'sent', 'paid', 'disputed', 'cancelled'));
 
 alter table public.settlement_periods drop constraint if exists settlement_periods_status_check;
+update public.settlement_periods
+set status = case lower(coalesce(status, ''))
+  when 'open' then 'open'
+  when 'draft' then 'open'
+  when 'active' then 'open'
+  when 'current' then 'open'
+  when 'pending' then 'open'
+  when 'new' then 'open'
+  when 'imported' then 'open'
+  when 'calculating' then 'calculating'
+  when 'calculation' then 'calculating'
+  when 'processing' then 'calculating'
+  when 'in_progress' then 'calculating'
+  when 'review' then 'reviewed'
+  when 'reviewed' then 'reviewed'
+  when 'ready' then 'approved'
+  when 'approved' then 'approved'
+  when 'completed' then 'closed'
+  when 'paid' then 'closed'
+  when 'sent' then 'closed'
+  when 'closed' then 'closed'
+  when 'locked' then 'locked'
+  else 'open'
+end;
 alter table public.settlement_periods
   add constraint settlement_periods_status_check
   check (status in ('open', 'calculating', 'reviewed', 'approved', 'closed', 'locked'));
@@ -463,6 +502,24 @@ alter table public.invoices
   check (status in ('draft', 'issued', 'sent_to_ksef', 'accepted_by_ksef', 'rejected_by_ksef', 'exported_to_accounting', 'cancelled'));
 
 alter table public.documents drop constraint if exists documents_status_check;
+update public.documents
+set status = case lower(coalesce(status, ''))
+  when 'draft' then 'draft'
+  when 'missing' then 'missing'
+  when 'uploaded' then 'uploaded'
+  when 'pending' then 'pending_review'
+  when 'pending_review' then 'pending_review'
+  when 'approved' then 'approved'
+  when 'rejected' then 'rejected'
+  when 'expired' then 'expired'
+  when 'ready' then 'ready'
+  when 'sent' then 'sent'
+  when 'signed' then 'signed'
+  when 'generated' then 'generated'
+  when 'archived' then 'archived'
+  when 'imported' then 'archived'
+  else 'draft'
+end;
 alter table public.documents
   add constraint documents_status_check
   check (status in (
