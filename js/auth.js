@@ -4,7 +4,15 @@ import { clearMsg, safe, showMsg } from './utils.js';
 
 export function createAuthModule({ loadAllData }) {
   function isStaff() {
-    return state.roles.some(role => ['admin', 'operator'].includes(safe(role).toLowerCase()));
+    return state.roles.some(role => [
+      'admin',
+      'operator',
+      'partner_admin',
+      'accountant',
+      'operations',
+      'driver_support',
+      'auditor'
+    ].includes(safe(role).toLowerCase()));
   }
 
   async function loadProfileAndRoles(userId) {
@@ -57,7 +65,7 @@ export function createAuthModule({ loadAllData }) {
       state.profile = null;
       state.roles = [];
       renderAppShell(false);
-      showMsg(el.msg, 'This account does not have admin/operator access.');
+      showMsg(el.msg, 'This account does not have back-office access.');
       return;
     }
 

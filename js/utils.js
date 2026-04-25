@@ -1,3 +1,5 @@
+import { normalizePercentRate } from './finance-engine.js';
+
 export function safe(value) {
   return value == null ? '' : String(value).trim();
 }
@@ -31,8 +33,8 @@ export function decimalInputValue(value, fallback = '') {
 }
 
 export function percentValue(value, fallback = '') {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? `${Math.round(parsed * 10000) / 100}` : fallback;
+  const normalized = normalizePercentRate(value, Number.NaN);
+  return Number.isFinite(normalized) ? `${Math.round(normalized * 100) / 100}` : fallback;
 }
 
 export function isoNow() {
@@ -117,11 +119,11 @@ export function humanize(value, fallback = '-') {
 
 export function badgeClass(status) {
   const normalized = safe(status).toLowerCase();
-  if (['paid'].includes(normalized)) return 'pay';
-  if (['active', 'ready', 'approved', 'calculated', 'sent', 'signed'].includes(normalized)) return 'active';
-  if (['disputed', 'expired', 'overdue'].includes(normalized)) return 'debt';
-  if (['closed', 'archived', 'inactive'].includes(normalized)) return 'closed';
-  if (['open', 'draft', 'pending', 'missing', 'imported'].includes(normalized)) return 'ready';
+  if (['paid', 'exported'].includes(normalized)) return 'pay';
+  if (['active', 'ready', 'approved', 'calculated', 'sent', 'signed', 'contract_signed', 'platform_activation', 'uploaded'].includes(normalized)) return 'active';
+  if (['disputed', 'expired', 'overdue', 'failed', 'rejected', 'blocked'].includes(normalized)) return 'debt';
+  if (['closed', 'locked', 'archived', 'inactive', 'terminated', 'cancelled'].includes(normalized)) return 'closed';
+  if (['open', 'draft', 'pending', 'pending_review', 'missing', 'documents_missing', 'imported', 'lead', 'onboarding', 'verification'].includes(normalized)) return 'ready';
   return '';
 }
 

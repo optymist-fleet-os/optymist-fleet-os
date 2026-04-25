@@ -15,6 +15,21 @@ import {
   vehicleLabel
 } from '../utils.js';
 
+const DRIVER_LIFECYCLE_STATUSES = [
+  'lead',
+  'onboarding',
+  'documents_missing',
+  'verification',
+  'contract_signed',
+  'platform_activation',
+  'active',
+  'blocked',
+  'terminated',
+  'archived',
+  'pending',
+  'inactive'
+];
+
 export function createDriversModule({
   assignments,
   documents,
@@ -96,9 +111,9 @@ export function createDriversModule({
             <div class="form-field">
               <label>Status</label>
               <select name="status">
-                <option value="active">Active</option>
-                <option value="pending">Pending</option>
-                <option value="inactive">Inactive</option>
+                ${DRIVER_LIFECYCLE_STATUSES.map(status => `
+                  <option value="${status}" ${status === 'active' ? 'selected' : ''}>${humanize(status)}</option>
+                `).join('')}
               </select>
             </div>
 
@@ -202,7 +217,7 @@ export function createDriversModule({
           <input id="driverSearchInput" placeholder="Search drivers" value="${escapeHtml(state.filters.driverSearch)}" />
           <select id="driverStatusFilter">
             <option value="all">All statuses</option>
-            ${['active', 'pending', 'inactive'].map(status => `
+            ${DRIVER_LIFECYCLE_STATUSES.map(status => `
               <option value="${status}" ${status === safe(state.filters.driverStatus) ? 'selected' : ''}>${humanize(status)}</option>
             `).join('')}
           </select>

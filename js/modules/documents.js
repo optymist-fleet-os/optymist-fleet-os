@@ -38,7 +38,20 @@ const DOCUMENT_TYPES = [
   'other'
 ];
 
-const DOCUMENT_STATUSES = ['draft', 'missing', 'ready', 'sent', 'signed', 'archived'];
+const DOCUMENT_STATUSES = [
+  'missing',
+  'uploaded',
+  'pending_review',
+  'approved',
+  'rejected',
+  'expired',
+  'draft',
+  'ready',
+  'sent',
+  'signed',
+  'generated',
+  'archived'
+];
 const ENTITY_TYPES = ['driver', 'vehicle', 'owner', 'settlement', 'owner_settlement', 'period', 'other'];
 const STORAGE_PROVIDERS = ['google_drive', 'manual_link', 'pending'];
 

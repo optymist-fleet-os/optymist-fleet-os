@@ -1,4 +1,9 @@
 import { db } from '../supabase.js';
+import {
+  calculateDriverSettlementTotals,
+  calculatePercentAmount,
+  normalizePercentRate
+} from '../finance-engine.js';
 import { archiveSettlementImportReports } from '../google-drive.js';
 import {
   getInitialSettlementImportState,
@@ -114,7 +119,7 @@ export function createDriverSettlementsModule({
   }
 
   function getSettlementConfig() {
-    const commissionRatePercent =
+    const rawCommissionRatePercent =
       findSettingNumber(['driver_settlement_commission_rate', 'company_commission_rate', 'default_commission_rate']) ??
       findCommissionRuleNumber(['driver', 'default']) ??
       8;
@@ -124,7 +129,7 @@ export function createDriverSettlementsModule({
       50;
 
     return {
-      commissionRatePercent,
+      commissionRatePercent: normalizePercentRate(rawCommissionRatePercent, 8),
       weeklySettlementFee
     };
   }
@@ -296,15 +301,18 @@ export function createDriverSettlementsModule({
     const inferredVehicleId = safe(draft.vehicle_id) || safe(selectedAssignment?.vehicle_id);
     const vehicle = vehiclesMap[String(inferredVehicleId)] || null;
     const inferredRentTotal = assignmentsForPeriod.reduce((sum, item) => sum + num(item.prorated_rent_total), 0);
-    const commissionRatePercent = safe(draft.commission_rate_snapshot)
-      ? num(draft.commission_rate_snapshot)
-      : num(config.commissionRatePercent);
+    const commissionRatePercent = normalizePercentRate(
+      safe(draft.commission_rate_snapshot)
+        ? draft.commission_rate_snapshot
+        : config.commissionRatePercent,
+      config.commissionRatePercent
+    );
     const effectivePlatformNetIncome = safe(draft.platform_net_income)
       ? num(draft.platform_net_income)
       : num(draft.gross_platform_income);
     const effectiveCompanyCommission = safe(draft.company_commission)
       ? num(draft.company_commission)
-      : effectivePlatformNetIncome * (commissionRatePercent / 100);
+      : calculatePercentAmount(effectivePlatformNetIncome, commissionRatePercent);
     const effectiveWeeklySettlementFee = safe(draft.weekly_settlement_fee)
       ? num(draft.weekly_settlement_fee)
       : num(config.weeklySettlementFee);
@@ -313,17 +321,20 @@ export function createDriverSettlementsModule({
       ? num(draft.carry_forward_balance)
       : defaultCarryForwardValue(previousSettlement);
 
-    const calculatedPayout =
-      effectivePlatformNetIncome +
-      num(draft.bonuses) -
-      num(draft.cash_collected) -
-      effectiveCompanyCommission -
-      effectiveWeeklySettlementFee -
-      effectiveRentTotal -
-      num(draft.fuel_total) -
-      num(draft.penalties_total) +
-      num(draft.adjustments_total) +
-      effectiveCarryForwardBalance;
+    const settlementTotals = calculateDriverSettlementTotals({
+      platform_net_income: effectivePlatformNetIncome,
+      bonuses: draft.bonuses,
+      cash_collected: draft.cash_collected,
+      company_commission: effectiveCompanyCommission,
+      commission_rate_snapshot: commissionRatePercent,
+      weekly_settlement_fee: effectiveWeeklySettlementFee,
+      rent_total: effectiveRentTotal,
+      fuel_total: draft.fuel_total,
+      penalties_total: draft.penalties_total,
+      adjustments_total: draft.adjustments_total,
+      carry_forward_balance: effectiveCarryForwardBalance
+    });
+    const calculatedPayout = settlementTotals.payout_to_driver;
 
     const existingSettlement =
       (safe(draft.settlement_id) &&
