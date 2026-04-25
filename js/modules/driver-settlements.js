@@ -813,6 +813,24 @@ export function createDriverSettlementsModule({
     return [`Imported from ${provider}`, ...noteParts.filter(Boolean)].join('. ');
   }
 
+  function hasDriverSettlementAmounts(importRow) {
+    return [
+      importRow.gross_platform_income,
+      importRow.platform_net_income,
+      importRow.cash_collected,
+      importRow.bonuses,
+      importRow.fuel_total
+    ].some(value => Math.abs(num(value)) >= 0.01);
+  }
+
+  function isCompanyPayoutImportRow(importRow) {
+    return (
+      safe(importRow.provider) === 'uber' &&
+      !hasDriverSettlementAmounts(importRow) &&
+      Math.abs(num(importRow.reported_driver_payout)) >= 0.01
+    );
+  }
+
   function parseUberRows(rows, fileName) {
     return rows.map(row => {
       const descriptor = buildImportedDriverDescriptor(row);
@@ -947,6 +965,7 @@ export function createDriverSettlementsModule({
 
   function rebuildSettlementImportRows(periodId, sourceReports = state.settlementImport.source_reports || []) {
     const groups = {};
+    const companyGroups = {};
     const warnings = [];
 
     sourceReports.forEach(report => {
@@ -956,6 +975,41 @@ export function createDriverSettlementsModule({
       }
 
       report.rows.forEach(importRow => {
+        if (isCompanyPayoutImportRow(importRow)) {
+          const groupKey = `company:${safe(importRow.provider)}:${safe(report.file_name)}`;
+
+          if (!companyGroups[groupKey]) {
+            companyGroups[groupKey] = {
+              key: groupKey,
+              row_type: 'company_payout',
+              period_id: periodId,
+              provider: safe(importRow.provider),
+              imported_name: importRow.imported_name,
+              imported_email: importRow.imported_email,
+              imported_phone: importRow.imported_phone,
+              imported_external_id: importRow.imported_external_id,
+              source_files: [],
+              providers: [],
+              company_payout_amount: 0,
+              company_payout_raw_amount: 0,
+              import_notes: [],
+              review_reason: 'Uber company payout / partner balance row. Excluded from driver settlements.'
+            };
+          }
+
+          const companyGroup = companyGroups[groupKey];
+          companyGroup.imported_name = companyGroup.imported_name || importRow.imported_name;
+          companyGroup.imported_email = companyGroup.imported_email || importRow.imported_email;
+          companyGroup.imported_phone = companyGroup.imported_phone || importRow.imported_phone;
+          companyGroup.company_payout_amount += Math.abs(num(importRow.reported_driver_payout));
+          companyGroup.company_payout_raw_amount += num(importRow.reported_driver_payout);
+
+          if (!companyGroup.source_files.includes(importRow.source_file)) companyGroup.source_files.push(importRow.source_file);
+          if (!companyGroup.providers.includes(importRow.provider)) companyGroup.providers.push(importRow.provider);
+          if (safe(importRow.import_note)) companyGroup.import_notes.push(importRow.import_note);
+          return;
+        }
+
         const matchedDriver = matchImportedDriver(importRow);
         const groupKey = matchedDriver
           ? `driver:${matchedDriver.id}`
@@ -1012,6 +1066,10 @@ export function createDriverSettlementsModule({
     return {
       rows: previewRows,
       unmatched_rows: previewRows.filter(row => !row.matched_driver_id),
+      company_rows: Object.values(companyGroups).sort((left, right) =>
+        safe(left.provider).localeCompare(safe(right.provider), 'uk') ||
+        safe(left.imported_name).localeCompare(safe(right.imported_name), 'uk')
+      ),
       warnings
     };
   }
@@ -1049,6 +1107,7 @@ export function createDriverSettlementsModule({
       source_reports: sourceReports,
       rows: rebuilt.rows,
       unmatched_rows: rebuilt.unmatched_rows,
+      company_rows: rebuilt.company_rows,
       warnings: [...warnings, ...rebuilt.warnings],
       last_error: '',
       last_imported_at: isoNow()
@@ -1259,6 +1318,7 @@ export function createDriverSettlementsModule({
           ...state.settlementImport,
           rows: rebuilt.rows,
           unmatched_rows: rebuilt.unmatched_rows,
+          company_rows: rebuilt.company_rows,
           warnings: rebuilt.warnings,
           last_error: ''
         };
@@ -1272,6 +1332,8 @@ export function createDriverSettlementsModule({
   function renderSettlementImportCard() {
     const importState = state.settlementImport || getInitialSettlementImportState();
     const matchedRows = importState.rows.filter(row => row.matched_driver_id);
+    const companyRows = importState.company_rows || [];
+    const companyPayoutTotal = companyRows.reduce((sum, row) => sum + num(row.company_payout_amount), 0);
     const driveState = state.googleDrive || {};
 
     return `
@@ -1344,6 +1406,11 @@ export function createDriverSettlementsModule({
               <div class="helper-note">Across all matched rows</div>
             </div>
             <div class="helper-card">
+              <div class="helper-label">Company payout rows</div>
+              <div class="helper-value">${companyRows.length}</div>
+              <div class="helper-note">${companyRows.length ? `${money(companyPayoutTotal)} excluded from driver settlements` : 'None detected'}</div>
+            </div>
+            <div class="helper-card">
               <div class="helper-label">Imported at</div>
               <div class="helper-value">${escapeHtml(importState.last_imported_at.slice(0, 16).replace('T', ' '))}</div>
               <div class="helper-note">Client-side parse</div>
@@ -1366,6 +1433,49 @@ export function createDriverSettlementsModule({
                 <span class="danger-text">${escapeHtml(warning)}</span>
               </div>
             `).join('')}
+          </div>
+        ` : ''}
+
+        ${companyRows.length ? `
+          <div class="card import-preview-card">
+            <h4 class="card-title">Company / platform payout rows</h4>
+            <div class="helper-text">
+              These rows represent payouts or balance movements between the platform and OPTYMIST. They are archived and kept for reconciliation, but they do not create driver settlements.
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Platform row</th>
+                    <th>Source</th>
+                    <th>Company payout</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${companyRows.map(row => `
+                    <tr>
+                      <td>
+                        <strong>${escapeHtml(row.imported_name || 'Company payout')}</strong>
+                        <div class="details-subvalue">${escapeHtml(row.imported_email || row.imported_phone || row.imported_external_id || '-')}</div>
+                      </td>
+                      <td>
+                        <div>${escapeHtml(row.providers.join(', '))}</div>
+                        <div class="details-subvalue">${escapeHtml(row.source_files.join(', '))}</div>
+                      </td>
+                      <td>
+                        <strong>${money(row.company_payout_amount)}</strong>
+                        <div class="details-subvalue">Raw platform sign: ${money(row.company_payout_raw_amount)}</div>
+                      </td>
+                      <td>
+                        <span class="status-pill ${badgeClass('pending_review')}">Reconciliation</span>
+                        <div class="details-subvalue">${escapeHtml(row.review_reason)}</div>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
           </div>
         ` : ''}
 
@@ -1876,6 +1986,7 @@ export function createDriverSettlementsModule({
           period_id: nextPeriodId,
           rows: rebuilt.rows,
           unmatched_rows: rebuilt.unmatched_rows,
+          company_rows: rebuilt.company_rows,
           warnings: rebuilt.warnings
         };
       }

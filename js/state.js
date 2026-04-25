@@ -57,6 +57,7 @@ export function getInitialSettlementImportState(overrides = {}) {
     source_reports: [],
     rows: [],
     unmatched_rows: [],
+    company_rows: [],
     warnings: [],
     last_error: '',
     last_imported_at: '',
