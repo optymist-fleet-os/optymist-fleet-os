@@ -703,6 +703,32 @@ export function createDriverSettlementsModule({
     };
   }
 
+  function stableJsonStringify(value) {
+    if (Array.isArray(value)) return `[${value.map(item => stableJsonStringify(item)).join(',')}]`;
+    if (value && typeof value === 'object') {
+      return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJsonStringify(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value ?? null);
+  }
+
+  function hashString(value) {
+    const source = safe(value);
+    let hash = 0;
+
+    for (let index = 0; index < source.length; index += 1) {
+      hash = ((hash << 5) - hash) + source.charCodeAt(index);
+      hash |= 0;
+    }
+
+    return Math.abs(hash).toString(36);
+  }
+
+  function rawDataFromRow(row) {
+    return Object.fromEntries(
+      Object.entries(row || {}).filter(([key]) => !safe(key).startsWith('__'))
+    );
+  }
+
   function getRowValue(row, candidates = []) {
     const entries = Object.entries(row || {});
 
@@ -777,7 +803,9 @@ export function createDriverSettlementsModule({
           'driver id',
           'uuid'
         ]) || fallbacks.external_id
-      )
+      ),
+      source_row_number: Number(row.__row_number || 0),
+      raw_data: rawDataFromRow(row)
     };
   }
 
@@ -989,7 +1017,10 @@ export function createDriverSettlementsModule({
               imported_phone: importRow.imported_phone,
               imported_external_id: importRow.imported_external_id,
               source_files: [],
+              file_hashes: [],
               providers: [],
+              raw_rows: [],
+              company_row_key: '',
               company_payout_amount: 0,
               company_payout_raw_amount: 0,
               import_notes: [],
@@ -1005,8 +1036,32 @@ export function createDriverSettlementsModule({
           companyGroup.company_payout_raw_amount += num(importRow.reported_driver_payout);
 
           if (!companyGroup.source_files.includes(importRow.source_file)) companyGroup.source_files.push(importRow.source_file);
+          if (safe(report.file_hash) && !companyGroup.file_hashes.includes(report.file_hash)) companyGroup.file_hashes.push(report.file_hash);
           if (!companyGroup.providers.includes(importRow.provider)) companyGroup.providers.push(importRow.provider);
           if (safe(importRow.import_note)) companyGroup.import_notes.push(importRow.import_note);
+
+          const rawRow = {
+            provider: safe(importRow.provider),
+            source_file: safe(importRow.source_file || report.file_name),
+            file_hash: safe(report.file_hash),
+            row_number: Number(importRow.source_row_number || 0),
+            raw_amount: num(importRow.reported_driver_payout),
+            raw_data: importRow.raw_data || {},
+            row_hash: hashString(stableJsonStringify({
+              provider: safe(importRow.provider),
+              source_file: safe(importRow.source_file || report.file_name),
+              file_hash: safe(report.file_hash),
+              row_number: Number(importRow.source_row_number || 0),
+              external_id: safe(importRow.imported_external_id),
+              raw_amount: num(importRow.reported_driver_payout),
+              raw_data: importRow.raw_data || {}
+            }))
+          };
+
+          if (!companyGroup.raw_rows.some(row => row.row_hash === rawRow.row_hash)) {
+            companyGroup.raw_rows.push(rawRow);
+          }
+          companyGroup.company_row_key = companyGroup.company_row_key || rawRow.row_hash;
           return;
         }
 
@@ -1080,12 +1135,18 @@ export function createDriverSettlementsModule({
 
     for (const file of files) {
       const text = typeof file.text === 'function' ? await file.text() : safe(file.text);
+      const fileHash = hashString(text);
       const parsed = parseCsvText(text);
       const kind = detectReportKind(parsed.headers, file.name);
-      const rows = parseRowsByKind(kind, parsed.rows, file.name);
+      const numberedRows = parsed.rows.map((row, index) => ({
+        ...row,
+        __row_number: index + 2
+      }));
+      const rows = parseRowsByKind(kind, numberedRows, file.name);
 
       sourceReports.push({
         file_name: file.name,
+        file_hash: fileHash,
         kind,
         row_count: rows.length,
         rows
@@ -1112,6 +1173,82 @@ export function createDriverSettlementsModule({
       last_error: '',
       last_imported_at: isoNow()
     };
+  }
+
+  function archiveFileForSource(archiveResult, sourceFileName) {
+    return (archiveResult?.files || []).find(file =>
+      safe(file.original_name) === safe(sourceFileName) ||
+      safe(file.name) === safe(sourceFileName)
+    ) || null;
+  }
+
+  async function persistCompanyPayoutRows(periodId, companyRows = [], archiveResult = {}) {
+    const rowsToPersist = [];
+    const period = state.periods.find(item => String(item.id) === String(periodId));
+
+    (companyRows || []).forEach(companyRow => {
+      (companyRow.raw_rows || []).forEach(rawRow => {
+        rowsToPersist.push({ companyRow, rawRow });
+      });
+    });
+
+    if (!rowsToPersist.length) {
+      state.settlementImport = {
+        ...state.settlementImport,
+        reconciliation_status: 'idle',
+        reconciliation_issue_count: 0,
+        reconciliation_error: ''
+      };
+      return { count: 0, errors: [] };
+    }
+
+    let count = 0;
+    const errors = [];
+
+    for (const { companyRow, rawRow } of rowsToPersist) {
+      const archiveFile = archiveFileForSource(archiveResult, rawRow.source_file);
+      const platform = safe(rawRow.provider || companyRow.provider || companyRow.providers?.[0] || 'uber');
+      const amount = Math.abs(num(rawRow.raw_amount || companyRow.company_payout_amount));
+
+      const { error } = await db.rpc('record_company_platform_payout_import', {
+        target_period_id: periodId,
+        target_platform: platform,
+        target_file_name: safe(rawRow.source_file || companyRow.source_files?.[0]),
+        target_file_hash: safe(rawRow.file_hash || companyRow.file_hashes?.[0]),
+        target_row_number: Number(rawRow.row_number || 0),
+        target_row_hash: safe(rawRow.row_hash || companyRow.company_row_key),
+        target_raw_data: rawRow.raw_data || {},
+        target_company_name: safe(companyRow.imported_name),
+        target_external_id: safe(companyRow.imported_external_id),
+        target_amount: amount,
+        target_raw_amount: num(rawRow.raw_amount || companyRow.company_payout_raw_amount),
+        target_source_files: companyRow.source_files || [],
+        target_archive_file_url: safe(archiveFile?.web_view_link || archiveFile?.webViewLink || archiveFile?.file_url),
+        target_archive_folder_url: safe(archiveResult.archive_folder_url || state.settlementImport.drive_archive_folder_url),
+        target_metadata: {
+          source: 'driver_settlements_auto_calc',
+          providers: companyRow.providers || [platform],
+          import_notes: companyRow.import_notes || [],
+          period_label: period ? periodLabel(period) : '',
+          review_reason: companyRow.review_reason
+        }
+      });
+
+      if (error) {
+        errors.push(`${safe(rawRow.source_file || companyRow.imported_name)}: ${error.message || 'reconciliation save failed'}`);
+      } else {
+        count += 1;
+      }
+    }
+
+    state.settlementImport = {
+      ...state.settlementImport,
+      reconciliation_status: errors.length ? (count ? 'partial' : 'failed') : 'recorded',
+      reconciliation_issue_count: count,
+      reconciliation_error: errors.join('; ')
+    };
+
+    return { count, errors };
   }
 
   function importDocumentTypeForKind(kind) {
@@ -1422,6 +1559,16 @@ export function createDriverSettlementsModule({
                 ? `<a href="${escapeHtml(importState.drive_archive_folder_url)}" target="_blank" rel="noreferrer">Open archive folder</a>`
                 : escapeHtml(importState.drive_archive_error || (driveState.connected ? 'Archive runs automatically after import.' : 'Waiting for Google Drive connection'))
               }</div>
+            </div>
+            <div class="helper-card">
+              <div class="helper-label">Reconciliation</div>
+              <div class="helper-value">${escapeHtml(humanize(importState.reconciliation_status || 'idle'))}</div>
+              <div class="helper-note">${escapeHtml(
+                importState.reconciliation_error ||
+                (importState.reconciliation_issue_count
+                  ? `${importState.reconciliation_issue_count} company payout issue(s) recorded`
+                  : 'Company payout rows are saved here when detected.')
+              )}</div>
             </div>
           </div>
         ` : ''}
@@ -1902,10 +2049,11 @@ export function createDriverSettlementsModule({
 
     try {
       state.settlementImport = await parseSettlementImportSources(files, periodId);
+      let archiveResult = null;
 
       if (state.googleDrive?.connected) {
         try {
-          const archiveResult = await archiveImportedReportsToDrive(
+          archiveResult = await archiveImportedReportsToDrive(
             periodId,
             files,
             state.settlementImport.source_reports
@@ -1957,6 +2105,30 @@ export function createDriverSettlementsModule({
         showMsg(
           el.appMsg,
           `Imported ${files.length} CSV file(s). Google Drive archive is not connected yet.`,
+          'success'
+        );
+      }
+
+      const reconciliationResult = await persistCompanyPayoutRows(
+        periodId,
+        state.settlementImport.company_rows,
+        archiveResult || {}
+      );
+
+      if (reconciliationResult.count || state.settlementImport.reconciliation_error) {
+        await loadAllData();
+      }
+
+      if (state.settlementImport.reconciliation_error) {
+        showMsg(
+          el.appMsg,
+          `Imported ${files.length} CSV file(s). Reconciliation save needs SQL/schema fix: ${state.settlementImport.reconciliation_error}`,
+          'error'
+        );
+      } else if (reconciliationResult.count) {
+        showMsg(
+          el.appMsg,
+          `Imported ${files.length} CSV file(s) and saved ${reconciliationResult.count} company payout row(s) to reconciliation.`,
           'success'
         );
       }

@@ -61,6 +61,9 @@ export function getInitialSettlementImportState(overrides = {}) {
     warnings: [],
     last_error: '',
     last_imported_at: '',
+    reconciliation_status: 'idle',
+    reconciliation_issue_count: 0,
+    reconciliation_error: '',
     drive_archive_status: 'idle',
     drive_archive_folder_id: '',
     drive_archive_folder_url: '',
@@ -134,6 +137,10 @@ export const pageMeta = {
   documents: {
     title: 'Documents center',
     subtitle: 'Metadata layer ready for future Google Drive storage'
+  },
+  reconciliation: {
+    title: 'Reconciliation',
+    subtitle: 'Import issues, platform payout rows and manual review queue'
   }
 };
 
@@ -150,6 +157,9 @@ export const state = {
   ownerVehicleSettlements: [],
   documents: [],
   assignments: [],
+  rawImportBatches: [],
+  normalizedTransactions: [],
+  reconciliationIssues: [],
   appSettings: [],
   commissionRules: [],
   driverBalances: [],
@@ -174,7 +184,11 @@ export const state = {
     documentSearch: '',
     documentEntity: 'all',
     documentType: 'all',
-    documentStatus: 'all'
+    documentStatus: 'all',
+    reconciliationSearch: '',
+    reconciliationStatus: 'all',
+    reconciliationSeverity: 'all',
+    reconciliationType: 'all'
   },
   forms: getInitialFormsState(),
   assignmentDraft: getInitialAssignmentDraft(),

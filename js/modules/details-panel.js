@@ -18,6 +18,7 @@ export function createDetailsPanelModule({
   driverSettlements,
   el,
   ownerSettlements,
+  reconciliation,
   renderAll
 }) {
   function renderItem(label, value, subvalue = '') {
@@ -53,6 +54,8 @@ export function createDetailsPanelModule({
     const vehiclesMap = mapById(state.vehicles);
     const ownersMap = mapById(state.owners);
     const periodsMap = mapById(state.periods);
+    const batchesMap = mapById(state.rawImportBatches);
+    const transactionsMap = mapById(state.normalizedTransactions);
     const selection = state.selectedDetails;
 
     el.detailsPanel.classList.remove('hidden');
@@ -413,6 +416,62 @@ export function createDetailsPanelModule({
 
       document.getElementById('documentEditBtn')?.addEventListener('click', () => {
         documents.openDocumentEditor(documentRecord.id);
+      });
+      return;
+    }
+
+    if (selection.type === 'reconciliation') {
+      const issue = state.reconciliationIssues.find(item => String(item.id) === String(selection.id));
+      if (!issue) {
+        el.detailsPanel.classList.add('hidden');
+        return;
+      }
+
+      const metadata = issue.metadata || {};
+      const batch = batchesMap[String(issue.source_import_batch_id)];
+      const transaction = transactionsMap[String(issue.related_transaction_id)];
+      const period = periodsMap[String(batch?.period_id)];
+      const archiveUrl = safe(metadata.archive_folder_url || metadata.archive_file_url);
+
+      el.detailsKicker.textContent = 'Reconciliation';
+      el.detailsTitle.textContent = reconciliation.issueTitle(issue);
+      el.detailsBody.innerHTML = `
+        ${renderSection('Issue', [
+          renderItem('Type', escapeHtml(humanize(issue.issue_type))),
+          renderItem('Status', escapeHtml(humanize(issue.status))),
+          renderItem('Severity', escapeHtml(humanize(issue.severity))),
+          renderItem('Amount', escapeHtml(money(reconciliation.issueAmount(issue)))),
+          renderItem('Resolution note', escapeHtml(safe(issue.resolution_note) || '-'))
+        ].join(''))}
+
+        ${renderSection('Source import', [
+          renderItem('Platform', escapeHtml(humanize(metadata.platform || batch?.platform))),
+          renderItem('Period', escapeHtml(periodLabel(period))),
+          renderItem('File', escapeHtml(safe(metadata.file_name || batch?.file_name) || '-')),
+          renderItem('Raw amount', escapeHtml(safe(metadata.raw_amount) ? money(metadata.raw_amount) : '-')),
+          renderItem('Drive archive', archiveUrl ? `<a href="${escapeHtml(archiveUrl)}" target="_blank" rel="noreferrer">Open Drive archive</a>` : '-')
+        ].join(''))}
+
+        ${renderSection('Normalized transaction', [
+          renderItem('Transaction type', escapeHtml(humanize(transaction?.transaction_type || metadata.transaction_type))),
+          renderItem('Transaction status', escapeHtml(humanize(transaction?.status || 'pending'))),
+          renderItem('External id', escapeHtml(safe(transaction?.external_transaction_id || metadata.external_id || metadata.company_row_key) || '-')),
+          renderItem('Metadata key', escapeHtml(safe(metadata.company_row_key) || '-'))
+        ].join(''))}
+
+        <div class="form-actions">
+          ${safe(issue.status) === 'resolved'
+            ? '<button type="button" class="secondary" id="reconciliationReopenBtn">Reopen</button>'
+            : '<button type="button" class="secondary" id="reconciliationResolveBtn">Resolve</button>'
+          }
+        </div>
+      `;
+
+      document.getElementById('reconciliationResolveBtn')?.addEventListener('click', async () => {
+        await reconciliation.updateIssueStatus(issue.id, 'resolved');
+      });
+      document.getElementById('reconciliationReopenBtn')?.addEventListener('click', async () => {
+        await reconciliation.updateIssueStatus(issue.id, 'open');
       });
       return;
     }

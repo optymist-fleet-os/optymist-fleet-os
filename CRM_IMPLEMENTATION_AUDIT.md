@@ -20,6 +20,7 @@ Date: 2026-04-25
 - Owners: `js/modules/owners.js`.
 - Assignments: `js/modules/assignments.js`, active assignment constraints, conflict close, assignment history.
 - Driver settlements: `js/modules/driver-settlements.js`, manual settlement form, CSV import preview, Google Drive raw report archive, settlement snapshots.
+- Reconciliation: `js/modules/reconciliation.js`, import issue queue for platform/company payout rows and manual review.
 - Owner settlements: `js/modules/owner-settlements.js`, owner payout grouping.
 - Documents center: `js/modules/documents.js`, Google Drive metadata layer.
 - Details panel: `js/modules/details-panel.js`, entity details and quick actions.
@@ -33,7 +34,7 @@ Date: 2026-04-25
 - Settlement engine still writes editable settlement snapshots directly; it is not yet fully ledger-derived.
 - Payout batches and payout approval workflow were missing from the UI and schema foundation.
 - Driver statements are not yet represented as a first-class statement view generated from ledger entries.
-- Import hub is still embedded inside driver settlements; raw imports, normalized transactions and reconciliation queue need first-class tables/UI.
+- Import hub is still embedded inside driver settlements; raw imports and normalized transactions now have schema/RPC support, but a dedicated import hub page is still needed.
 - Contracts are represented mainly by driver `contract_status`; full contract history/rules are missing.
 - Invoices/KSeF workflow is missing beyond document metadata placeholders.
 - Support tickets are missing as a domain module.
@@ -47,7 +48,7 @@ Date: 2026-04-25
 - Current settlement calculations used JavaScript floating point arithmetic directly.
 - Driver settlement import stores parsed data in browser memory first and writes settlement snapshots directly; raw/normalized/reconciled pipeline is not yet complete.
 - Supabase client key is public in frontend by design, so RLS policies must be correct for every table.
-- UI currently has no route/page for ledger, reconciliation queue, payout batches, invoices, tickets or audit log.
+- UI currently has no route/page for ledger, import hub, payout batches, invoices, tickets or audit log. A first reconciliation page now exists.
 - Google Drive OAuth refresh token works, but future production hardening should add rotation notes and narrower operational controls.
 
 ## Recommended Implementation Order
@@ -92,6 +93,7 @@ Date: 2026-04-25
 - Extend driver profile into tabs: Identity, Documents, Contracts, Vehicles, Platform Accounts, Ledger, Settlements, Payouts, Tickets, Audit.
 - Add import hub page with raw import batches, normalized transactions and file links.
 - Add reconciliation queue page with issue assignment and resolution.
+- Continue reconciliation UI with assignment, severity management and issue-to-ledger correction actions.
 - Add ledger page with draft/posted/reversed/locked filters and reversal/correction actions.
 - Add settlement period management page with calculate/review/approve/close/lock flow.
 - Add payout batches page with preview, approval, export and paid status.
@@ -108,6 +110,7 @@ Date: 2026-04-25
 - Verify posted ledger entries cannot be updated or deleted.
 - Verify locked settlement periods block non-correction ledger entries.
 - Verify CSV import produces raw Drive archive, preview, matched/unmatched rows and settlement/pending reconciliation results.
+- Verify Uber partner/company payout rows are excluded from driver settlements and recorded as reconciliation issues.
 - Verify payout batch creation from settlement period totals.
 - Verify documents can be marked missing/uploaded/pending_review/approved/rejected/expired and expiry alerts show on dashboard.
 
@@ -118,3 +121,6 @@ Date: 2026-04-25
 - Expanded frontend staff-role recognition for future RBAC roles.
 - Added a ledger-first SQL foundation migration for RBAC, immutable ledger triggers, payouts, imports, reconciliation, invoices, tickets, contracts and audit triggers.
 - Added a focused finance-engine test script.
+- Added a Reconciliation sidebar module and details panel for import issues.
+- Added Google Drive archived company payout rows to the raw import/normalized transaction/reconciliation pipeline through `record_company_platform_payout_import`.
+- Treated Uber negative partner payout rows, for example the Volodymyr Demchenko company row, as OPTYMIST/platform reconciliation money instead of driver payout debt.

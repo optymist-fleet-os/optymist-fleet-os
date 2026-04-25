@@ -11,6 +11,7 @@ import { createDriverSettlementsModule } from './modules/driver-settlements.js';
 import { createDriversModule } from './modules/drivers.js';
 import { createOwnerSettlementsModule } from './modules/owner-settlements.js';
 import { createOwnersModule } from './modules/owners.js';
+import { createReconciliationModule } from './modules/reconciliation.js';
 import { createVehiclesModule } from './modules/vehicles.js';
 
 let isLoadingData = false;
@@ -72,12 +73,18 @@ const dashboardModule = createDashboardModule({
   el,
   ownerSettlements: ownerSettlementsModule
 });
+const reconciliationModule = createReconciliationModule({
+  el,
+  loadAllData,
+  renderAll
+});
 const detailsPanelModule = createDetailsPanelModule({
   assignments: assignmentsModule,
   documents: documentsModule,
   driverSettlements: driverSettlementsModule,
   el,
   ownerSettlements: ownerSettlementsModule,
+  reconciliation: reconciliationModule,
   renderAll
 });
 
@@ -101,6 +108,7 @@ function collectElements() {
   el.ownersPage = qs('page-owners');
   el.ownerSettlementsPage = qs('page-owner-settlements');
   el.settlementsPage = qs('page-settlements');
+  el.reconciliationPage = qs('page-reconciliation');
   el.documentsPage = qs('page-documents');
   el.detailsPanel = qs('detailsPanel');
   el.detailsKicker = qs('detailsKicker');
@@ -124,6 +132,7 @@ function setPage(page) {
     owners: el.ownersPage,
     'owner-settlements': el.ownerSettlementsPage,
     settlements: el.settlementsPage,
+    reconciliation: el.reconciliationPage,
     documents: el.documentsPage
   };
 
@@ -157,6 +166,9 @@ async function loadAllData() {
       ownerVehicleSettlementsRes,
       documentsRes,
       assignmentsRes,
+      rawImportBatchesRes,
+      normalizedTransactionsRes,
+      reconciliationIssuesRes,
       appSettingsRes,
       commissionRulesRes,
       driverBalancesRes,
@@ -170,6 +182,9 @@ async function loadAllData() {
       db.from('owner_vehicle_settlements').select('*'),
       db.from('documents').select('*').order('created_at', { ascending: false }),
       db.from('driver_vehicle_assignments').select('*').order('assigned_from', { ascending: false }),
+      db.from('raw_import_batches').select('*').order('imported_at', { ascending: false }),
+      db.from('normalized_platform_transactions').select('*').order('created_at', { ascending: false }),
+      db.from('reconciliation_issues').select('*').order('created_at', { ascending: false }),
       db.from('app_settings').select('*'),
       db.from('commission_rules').select('*'),
       db.from('v_driver_balances').select('*'),
@@ -198,6 +213,9 @@ async function loadAllData() {
     state.ownerVehicleSettlements = ownerVehicleSettlementsRes.error ? [] : (ownerVehicleSettlementsRes.data || []);
     state.documents = documentsRes.data || [];
     state.assignments = assignmentsRes.data || [];
+    state.rawImportBatches = rawImportBatchesRes.error ? [] : (rawImportBatchesRes.data || []);
+    state.normalizedTransactions = normalizedTransactionsRes.error ? [] : (normalizedTransactionsRes.data || []);
+    state.reconciliationIssues = reconciliationIssuesRes.error ? [] : (reconciliationIssuesRes.data || []);
     state.appSettings = appSettingsRes.error ? [] : (appSettingsRes.data || []);
     state.commissionRules = commissionRulesRes.error ? [] : (commissionRulesRes.data || []);
     state.driverBalances = driverBalancesRes.error ? [] : (driverBalancesRes.data || []);
@@ -221,6 +239,7 @@ function renderAll() {
     ownersModule.renderOwnersPage();
     ownerSettlementsModule.renderOwnerSettlementsPage();
     driverSettlementsModule.renderSettlementsPage();
+    reconciliationModule.renderReconciliationPage();
     documentsModule.renderDocumentsPage();
     detailsPanelModule.renderDetailsPanel();
     setPage(state.currentPage);

@@ -94,6 +94,9 @@ export function createDashboardModule({
     const totalDriverPayout = state.settlements.reduce((sum, item) => sum + num(item.payout_to_driver), 0);
     const totalOwnerPayout = ownerSettlementRows.reduce((sum, item) => sum + num(item.payout_to_owner), 0);
     const outstandingBalance = driverSettlements.getOutstandingBalanceTotal();
+    const unresolvedReconciliation = state.reconciliationIssues.filter(issue =>
+      ['open', 'pending_review'].includes(safe(issue.status))
+    ).length;
     const alerts = getOperationalAlerts().slice(0, 8);
     const latestSettlements = [...state.settlements]
       .sort((left, right) => String(right.created_at || '').localeCompare(String(left.created_at || '')))
@@ -113,6 +116,7 @@ export function createDashboardModule({
         <div class="card"><div class="metric-label">Payout to drivers</div><div class="metric-value">${money(totalDriverPayout)}</div></div>
         <div class="card"><div class="metric-label">Payout to owners</div><div class="metric-value">${money(totalOwnerPayout)}</div></div>
         <div class="card"><div class="metric-label">Outstanding balances</div><div class="metric-value">${money(outstandingBalance)}</div></div>
+        <div class="card"><div class="metric-label">Reconciliation issues</div><div class="metric-value">${unresolvedReconciliation}</div></div>
         <div class="card"><div class="metric-label">Operational alerts</div><div class="metric-value">${alerts.length}</div></div>
       </div>
 
