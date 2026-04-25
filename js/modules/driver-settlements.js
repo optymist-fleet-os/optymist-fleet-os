@@ -1065,6 +1065,7 @@ export function createDriverSettlementsModule({
 
   async function upsertImportedReportDocumentMetadata(period, archiveResult) {
     const archivedFiles = archiveResult?.files || [];
+    const metadataErrors = [];
 
     for (const file of archivedFiles) {
       const title = safe(file.original_name) || safe(file.name);
@@ -1112,8 +1113,18 @@ export function createDriverSettlementsModule({
         error = retry.error;
       }
 
-      if (error) throw error;
+      if (error && safe(error.message).includes('entity_id') && safe(error.message).includes('uuid')) {
+        const fallbackPayload = { ...payload };
+        delete fallbackPayload.entity_type;
+        delete fallbackPayload.entity_id;
+        const retry = await saveWithPayload(fallbackPayload);
+        error = retry.error;
+      }
+
+      if (error) metadataErrors.push(`${title}: ${error.message || 'metadata save failed'}`);
     }
+
+    return metadataErrors;
   }
 
   async function archiveImportedReportsToDrive(periodId, files, sourceReports) {
@@ -1128,9 +1139,12 @@ export function createDriverSettlementsModule({
       sourceReports
     });
 
-    await upsertImportedReportDocumentMetadata(period, archiveResult);
+    const metadataErrors = await upsertImportedReportDocumentMetadata(period, archiveResult);
 
-    return archiveResult;
+    return {
+      ...archiveResult,
+      metadata_errors: metadataErrors
+    };
   }
 
   function clearSettlementImport(keepPeriod = true) {
@@ -1793,16 +1807,24 @@ export function createDriverSettlementsModule({
             drive_archive_folder_id: safe(archiveResult.archive_folder_id),
             drive_archive_folder_url: safe(archiveResult.archive_folder_url),
             drive_archived_files: archiveResult.files || [],
-            drive_archive_error: '',
+            drive_archive_error: (archiveResult.metadata_errors || []).join('; '),
             drive_archive_last_at: safe(archiveResult.archived_at)
           };
 
           await loadAllData();
-          showMsg(
-            el.appMsg,
-            `Imported ${files.length} CSV file(s) and archived ${archiveResult.files?.length || 0} report(s) to Google Drive.`,
-            'success'
-          );
+          if (archiveResult.metadata_errors?.length) {
+            showMsg(
+              el.appMsg,
+              `Imported ${files.length} CSV file(s) and archived ${archiveResult.files?.length || 0} report(s) to Google Drive. Metadata link needs schema fix: ${archiveResult.metadata_errors[0]}`,
+              'success'
+            );
+          } else {
+            showMsg(
+              el.appMsg,
+              `Imported ${files.length} CSV file(s) and archived ${archiveResult.files?.length || 0} report(s) to Google Drive.`,
+              'success'
+            );
+          }
         } catch (archiveError) {
           state.settlementImport = {
             ...state.settlementImport,
